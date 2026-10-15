@@ -22,6 +22,6 @@ jobs:
             --region southamerica-east1 \
             --service-account "${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --set-env-vars "TELEGRAM_CHANNEL_ID=@logisticapmdf" \
-            --set-secrets "TELEGRAM_BOT_TOKEN=radar-telegram-token:latest,TELEGRAM_WEBHOOK_SECRET=radar-webhook-secret:latest,ALLOWED_TELEGRAM_USER_IDS=radar-allowed-user-ids:latest" \
+            --set-secrets "TELEGRAM_BOT_TOKEN=radar-telegram-token:latest,TELEGRAM_WEBHOOK_SECRET=radar-webhook-secret:latest" \
             --allow-unauthenticated \
             --quiet
