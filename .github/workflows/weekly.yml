@@ -1,21 +1,28 @@
-name: Weekly briefing
+name: Weekly briefing preview
 on:
   workflow_dispatch:
-  # Cron será ativado após validar coleta, fontes e publicação.
+  # After source validation and approval only: Monday 09:00 America/Sao_Paulo = 12:00 UTC.
+  # schedule:
+  #   - cron: '0 12 * * 1'
 permissions:
   contents: read
+concurrency:
+  group: radar-briefing-preview
+  cancel-in-progress: false
 jobs:
-  briefing:
+  preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - run: python -m app.briefing
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_ID: ${{ vars.TELEGRAM_CHANNEL_ID }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: briefing-preview-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 7
+          if-no-files-found: error

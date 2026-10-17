@@ -33,5 +33,8 @@ async def main():
     print("Webhook registration succeeded")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception:
+        raise SystemExit('Webhook registration failed; inspect connectivity and secret configuration securely.') from None
 

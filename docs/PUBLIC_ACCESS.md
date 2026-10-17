@@ -1,25 +1,15 @@
-# Acesso público ao bot Telegram
+# Acesso público e limites
 
-O bot responde a qualquer usuário em conversa privada. Não é necessário cadastrar IDs em `ALLOWED_TELEGRAM_USER_IDS`. O webhook continua protegido por `TELEGRAM_WEBHOOK_SECRET`.
+Todos os IDs Telegram válidos podem usar `/start`, `/ajuda`, `/pncp`, `/licitacoes` e `/atas` em conversa privada. Não existe allowlist de usuários. Bots e mensagens de grupos são ignorados; o webhook exige o segredo Telegram correto.
 
-## Limite distribuído
+`/pncp termo`, `/licitacoes termo` e `/atas termo` compartilham quota de 10 consultas por usuário nos últimos 3.600 segundos. Validação acontece antes da quota de consulta; comandos inválidos ainda consomem orçamento de atualizações aceitas. Cache hit também consome quota de usuário, impedindo abuso de envios. Consultas que falham depois da admissão consomem quota, sem reembolso ou retry externo automático.
 
-Até **10 consultas PNCP por usuário em uma janela fixa de 60 minutos**, contabilizada a partir da primeira consulta na janela. `/start`, `/ajuda` e `/atas` (ainda indisponível) não consomem quota.
+Firestore: namespace `radar_publico_users` armazena até 10 timestamps e os últimos 32 update IDs por usuário, válidos por até 24h; duplicatas nesse recorte são ignoradas. Replays antigos fora do recorte podem ser processados novamente, mas permanecem sujeitos às quotas. A reivindicação antes de processar evita duplicação de custo; um crash posterior pode perder a resposta. Exatamente uma resposta por update não é garantida.
 
-O limite é implementado com transações do **Google Cloud Firestore** para funcionar entre múltiplas instâncias Cloud Run. Se o Firestore estiver indisponível ou não configurado, as consultas falham de forma segura, sem liberar tráfego ilimitado.
+A mesma transação lê controle global, contador diário e usuário antes de escrever. Teto inicial: 1.500 atualizações novas/dia UTC (inclui comandos de ajuda e rejeições por quota de usuário) e 400 requisições PNCP/dia UTC, reservadas antes de cada chamada externa. Retries de transação são limitados a três tentativas. O webhook autentica e limita corpo a 16 KiB antes de persistência.
 
-### Provisionamento
+Cache: chave inclui comando, termo normalizado e data Brasília. Até 256 slots persistentes por hash; colisão causa miss, nunca resposta de outro termo. Resultado expira em 30 minutos; somente resultado completo é gravado. Cache não contorna quota nem suspensão. Não há TTL pago de limpeza automática. Documentos de usuário são persistentes; prever limpeza operacional revisada de usuários inativos, com conta separada e análise de retenção/custo.
 
-1. Ative `firestore.googleapis.com` no projeto Google Cloud do Cloud Run.
-2. Crie uma base Firestore em **Native mode** (database ID `(default)`, salvo se definir `FIRESTORE_DATABASE`). Escolha uma região compatível com seus requisitos de residência e latência.
-3. Conceda `roles/datastore.user` **à conta de serviço de execução do radar-publico-bot**, não à conta do DODF.
-4. Faça novo deploy do Cloud Run a partir do commit com estas alterações.
-5. Teste `/start` e `/pncp viaturas` com usuário antes não autorizado; confirme limite na 11ª consulta.
+`radar_publico_ops/control` com `suspended=true` bloqueia admissões; `QUERIES_ENABLED=false` interrompe todos os comandos. Ao atingir teto global ou falhar dependência, circuit breaker local suprime novas operações por 30–60 segundos, reduzindo repetição de leituras. A falha de Firestore impede consultas e não tenta envio ilimitado de avisos. Requisições continuam chegando ao Cloud Run: esses controles **não garantem teto monetário**, nem impedem cobrança por flood HTTP, logs ou reentregas.
 
-O comando `/pncp` ainda faz uma **busca amostral**, não uma pesquisa exaustiva. Não ative o briefing semanal até implementar a verificação de fontes oficiais.
-
-### Notas operacionais
-
-- Firestore tem custos e cotas próprios; monitore a cobrança no Google Cloud.
-- A versão inicial não possui deduplicação persistente de `update_id` do Telegram. Reentregas do mesmo update podem consumir quota adicional.
-- A API responde de forma síncrona às consultas; consultas longas podem exigir fila assíncrona em uma versão posterior.
+As respostas sempre identificam a busca como amostral e mostram período/páginas. Contratações: publicações nas modalidades 6, 8, 4, 5; até duas páginas por modalidade. Atas: atualização global, até duas páginas; inclui atas expiradas/canceladas e links para a contratação de origem. Não apresentar esses resultados como catálogo completo de atas vigentes ou disponíveis para adesão.

@@ -49,6 +49,7 @@ async def process(cid, uid, update, text):
             term = validate_term(parts[1] if len(parts) > 1 else '')
         except ValueError:
             invalid = True
+    accepted = False
     try:
         accepted = await asyncio.to_thread(store.admit, uid, update, query and not invalid)
         if not accepted:
@@ -83,7 +84,12 @@ async def process(cid, uid, update, text):
     except Exception:
         event('dependency_failure')
         paused_until = time.monotonic()+30
-        # Do not send on persistence failure: avoid an unmetered response flood.
+        # Only admitted requests may send an error; persistence failures remain silent.
+        if accepted:
+            try:
+                await telegram_send(cid, 'Fonte ou serviço temporariamente indisponível. Tente novamente mais tarde.')
+            except Exception:
+                event('telegram_failure')
         return
 
 

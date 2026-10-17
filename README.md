@@ -1,15 +1,24 @@
-# Radar Público — Logística e Finanças
+# Radar Público
 
-Bot Telegram para consultas amostrais ao PNCP e futuro briefing semanal de fontes oficiais.
+MVP Python/FastAPI para `@Log_pmdf_bot`. Comandos públicos em conversa privada: `/start`, `/ajuda`, `/pncp termo`, `/licitacoes termo` e `/atas termo`.
 
-## Estado
-- API FastAPI com webhook autenticado e autorização por Telegram user ID.
-- `/pncp termo` e `/licitacoes termo`: busca **amostral**, não exaustiva.
-- Briefing semanal: **bloqueado até existir coleta e verificação de fontes oficiais**.
-- Implantação Cloud Run e credenciais ainda pendentes.
+As buscas consultam uma **amostra** do PNCP dos últimos sete dias, filtrada localmente pelo objeto: até duas páginas de 50 registros por modalidade (6, 8, 4, 5), ou duas páginas de atas por atualização global. Até cinco resultados. Ausência na amostra não comprova inexistência. Atas podem estar vencidas/canceladas; confirme vigência e possibilidade de adesão na fonte oficial.
 
-## Segurança
-Configure `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` e `ALLOWED_TELEGRAM_USER_IDS` via Secret Manager; não coloque segredos no Git. Canal: bot administrador com permissão de postagem.
+Limites distribuídos: 10 consultas por usuário em qualquer intervalo de 60 minutos, 1.500 atualizações aceitas/dia UTC e 400 chamadas PNCP/dia UTC. Cache de 30 minutos, em até 256 documentos Firestore. Duplicatas recentes não repetem consultas. Falhas na persistência bloqueiam novas buscas.
 
-## Atenção
-O repositório foi identificado como **público** no GitHub. Altere para privado em Settings → General → Danger Zone → Change repository visibility se desejar acesso restrito.
+Briefing sem IA: seleção determinística de cinco títulos originais, recentes e relevantes, com fonte oficial, data e confirmação na página. Gera JSON/texto para revisão. Cron e publicação automática permanecem desativados. As fontes de Gestão/Compras redirecionaram para login na validação de 17/10/2026; **a geração real ainda está bloqueada**.
+
+Testes locais (Python 3.12 em CI; validação local também em 3.13):
+
+```powershell
+python -m venv .venv
+.venv/Scripts/python -m pip install -r requirements-dev.txt
+.venv/Scripts/python -m pytest -q
+```
+
+Não há dependência nem chamada de IA paga. Não coloque tokens no Git. O contêiner usa usuário sem privilégios. Alterações de produção exigem confirmação do responsável.
+
+- [Implantação e IAM](docs/DEPLOY.md)
+- [Limites e acesso público](docs/PUBLIC_ACCESS.md)
+- [Riscos financeiros e operação](docs/COSTS.md)
+- [Validação e pendências](docs/VALIDATION.md)

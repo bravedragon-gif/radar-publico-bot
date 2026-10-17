@@ -77,3 +77,17 @@ def test_cache_expiry(db,monkeypatch):
     assert store.cache_get('abc123') == {'items':[]}
     monkeypatch.setattr(rl.time,'time',lambda:10**12)
     assert store.cache_get('abc123') is None
+
+def test_wrong_cache_key_never_returns_other_query(db):
+    store=rl.Store()
+    store.cache_set('00000000a',{'items':['one']})
+    assert store.cache_get('00000000b') is None
+
+
+def test_user_rejection_counts_global_budget(db):
+    store=rl.Store()
+    for i in range(10):
+        store.admit(1,i,True,10000+i)
+    with pytest.raises(rl.LimitReached):
+        store.admit(1,11,True,10020)
+    assert db.data['radar_publico_ops/budget']['updates']==11

@@ -1,0 +1,11 @@
+{
+  "title": "RadarRuntime",
+  "description": "Get/create/update documents and begin Firestore transactions; no list or delete",
+  "stage": "GA",
+  "includedPermissions": [
+    "datastore.databases.get",
+    "datastore.entities.get",
+    "datastore.entities.create",
+    "datastore.entities.update"
+  ]
+}
