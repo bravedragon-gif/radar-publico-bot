@@ -18,7 +18,7 @@ async def main():
             "url": URL,
             "secret_token": secret,
             "allowed_updates": ["message"],
-            "drop_pending_updates": True,
+            "max_connections": 1,
         })
         if r.status_code != 200:
             try:
@@ -34,3 +34,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
