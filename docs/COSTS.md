@@ -1,0 +1,31 @@
+# Riscos financeiros e operação
+
+Objetivo: baixo volume dentro das franquias. **Custo zero não é garantido.** Projeto compartilhado com outro serviço: a utilização do DODF pode consumir as mesmas franquias. Nenhuma mudança de faturamento, quota, IAM, alertas ou serviço foi aplicada nesta sessão.
+
+## Serviços e franquias
+
+- Cloud Run por solicitação: franquias de CPU/memória/solicitações são aplicadas por conta de faturamento, com referência regional de preços. `southamerica-east1` tem sua própria tabela de preço; comparar valor dos créditos gratuitos, não presumir igualdade com us-central1. Mínimo zero evita manter instância ociosa; máximo um/CPU throttling reduz exposição, mas não impede fatura. Saída de rede do Brasil para PNCP/Telegram pode ser cobrada; franquia de egress descrita para América do Norte não deve ser presumida para São Paulo. [Preços oficiais](https://cloud.google.com/run/pricing).
+- Firestore Standard `(default)`: validar edição, localização e elegibilidade do banco gratuito existente. A tabela oficial informa 50 mil leituras, 20 mil escritas, 20 mil exclusões/dia e 1 GiB de armazenamento, com regras específicas para franquia de rede e um banco gratuito por projeto. Transações/retries, duplicatas, índices, retenção, PITR/backup/TTL podem gerar cobranças. Não habilitar recursos pagos automaticamente. [Preços](https://cloud.google.com/firestore/pricing), [quotas](https://firebase.google.com/docs/firestore/quotas).
+- Secret Manager: versões ativas e acessos têm limites gratuitos próprios; versões antigas (inclusive desabilitadas, ainda consideradas ativas para cobrança) e muitas inicializações podem excedê-los. Fixar versões de segredos e revisar retenção. [Preços](https://cloud.google.com/secret-manager/pricing).
+- Artifact Registry: armazenamento de imagens por commit acumula custo. Sem política de limpeza automática aplicada; propor retenção de imagem atual e algumas revisões de rollback após análise. [Preços](https://cloud.google.com/artifact-registry/pricing).
+- Cloud Logging/Monitoring: logs do Cloud Run, aplicação e alertas podem gerar cobrança além das franquias. Evitar conteúdo de mensagens/tokens/stack traces e amostragem excessiva. A política proposta não cria uptime checks. [Logging](https://cloud.google.com/logging/pricing), [Monitoring](https://cloud.google.com/monitoring/pricing).
+- GitHub Actions: validar elegibilidade/limites da conta, runners e armazenamento de artefatos. O workflow usa runner Linux hospedado e retenção de prévia de sete dias. Build local/Actions evita Cloud Build, mas upload e armazenamento continuam sujeitos a preço. [Billing do GitHub](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+- Não usa IA paga, Cloud Scheduler, Pub/Sub, Cloud Functions ou filas gerenciadas. Não habilitar esses serviços sem autorização.
+
+## Estimativa operacional, não promessa de fatura
+
+Com 1.500 atualizações aceitas/dia e 400 chamadas externas/dia, caminho normal sem retries: até 4.500 leituras de admissão + 1.500 leituras de cache + 400 leituras de reserva = aproximadamente 6.400 leituras/dia; até 3.000 escritas de admissão + 400 de reserva + até 400 cache = aproximadamente 3.800 escritas/dia. Reservas custam mesmo se PNCP falhar. Essa conta exclui reentregas, rejeições, transações repetidas, chamadas administrativas e qualquer consumo do DODF. Não é um limite rígido de operações Firestore.
+
+Até oito chamadas sequenciais por pesquisa de contratações, duas para atas. Timeout total do PNCP de 30s; erros não são repetidos automaticamente. O cache reduz chamadas externas, mas quota por usuário e controle global são consultados em cada admissão. Um atacante pode gerar custos de CPU/leituras mesmo após rejeição; pausa local reduz, sem eliminar, esse risco. Restrição pública do webhook por segredo protege integrações, não elimina custo de tráfego HTTP não autenticado.
+
+## Alertas propostos (exigem aprovação para aplicar)
+
+1. No Billing, criar orçamento **alerts-only** para o projeto, valor/moeda a confirmar pelo titular, avisos em 50%, 80%, 100% e previsão. Projetos compartilhados precisam monitorar o total; avisos não distinguem integralmente coleções Firestore do Radar. Não escolher unilateralmente um orçamento monetário.
+2. Não desativar billing do projeto automaticamente: afetaria DODF. Budgets apenas de alerta não suspendem consumo; dados de faturamento atrasam. Existem spend caps para serviços elegíveis, mas é necessário verificar cobertura/requisitos antes de adotá-los; não presumir proteção de todo este stack. [Budgets oficiais](https://docs.cloud.google.com/billing/docs/how-to/budgets), [spend caps](https://docs.cloud.google.com/billing/docs/how-to/budgets-spend-caps).
+3. `infra/operational-alert.json` contém política de logs exclusivamente do serviço Radar. Inserir canal de notificação confirmado em `notificationChannels` antes de aplicar. Sem esse canal o arquivo é apenas uma proposta, não um alerta operacional. Após autorização e configuração: `gcloud monitoring policies create --policy-from-file=infra/operational-alert.json --project=dodfpmdfbot`. Verificar suporte ao comando na versão instalada.
+4. Verificar diariamente os contadores `radar_publico_ops/budget`, painel Cloud Run (CPU, memória, requests, latência, erros) e consumo Firestore total. Eventos da aplicação: `cache_hit`, `cache_miss`, `query_ok`, `dependency_failure`, `duplicate_update`, `limit_user`, `limit_global`, `limit_external`, `limit_suspended`. Não há IDs ou termos nos logs.
+5. Suspensão local ao alcançar limites já implementada. Suspensão durável pelo controle Firestore ou variável do serviço, conforme runbook; não criar acionamento externo pago sem aprovação. Testar notificação e suspensão em ambiente autorizado antes do lançamento.
+
+## Retenção e limites restantes
+
+O cache é limitado a 256 documentos, mas documentos de usuários e reivindicações semanais crescem com o uso. Definir prazo de retenção e limpeza manual com dry-run, revisada e com batch limitado; nenhuma exclusão foi implementada/executada automaticamente. Restringir acesso ao banco e documentar retenção de IDs de usuários. Limpeza também consome operações cobradas. Imagens/revisões/logs precisam de política de retenção aprovada.

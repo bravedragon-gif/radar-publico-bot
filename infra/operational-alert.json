@@ -1,0 +1,22 @@
+{
+  "displayName": "Radar - operational suspension or dependency failure",
+  "combiner": "OR",
+  "enabled": true,
+  "conditions": [
+    {
+      "displayName": "Radar dependency or budget event",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"radar-publico-bot\" AND (jsonPayload.event=\"dependency_failure\" OR jsonPayload.event=\"limit_global\" OR jsonPayload.event=\"limit_external\" OR jsonPayload.event=\"limit_suspended\")"
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": {"period": "900s"},
+    "autoClose": "1800s"
+  },
+  "notificationChannels": [],
+  "documentation": {
+    "content": "Check Radar counters and costs. Suspend only radar_publico_ops/control or QUERIES_ENABLED. Never disable shared project billing or change dodfpmdfbot service.",
+    "mimeType": "text/markdown"
+  }
+}

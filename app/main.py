@@ -1,59 +1,133 @@
+"""Public Telegram commands; all persistence and external errors fail closed."""
+import asyncio
+import json
+import logging
 import os
 import secrets
-from fastapi import FastAPI, Request, HTTPException
-from app.core import pncp_search, format_pncp, telegram_send
-from app.rate_limit import consume
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-app = FastAPI(title="Radar Público")
+from fastapi import FastAPI, HTTPException, Request
+from app.core import format_pncp, normalize, pncp_search, telegram_send, validate_term
+from app.rate_limit import LimitReached, cache_key, store
 
-@app.get("/health")
+app = FastAPI(title='Radar Público', docs_url=None, redoc_url=None, openapi_url=None)
+logger = logging.getLogger('radar')
+# Do not enable httpx/httpcore debug logs: Telegram URLs include credentials.
+logging.getLogger('httpx').setLevel(logging.CRITICAL)
+logging.getLogger('httpcore').setLevel(logging.CRITICAL)
+lock = asyncio.Lock()
+paused_until = 0.0
+HELP = ('Radar Público — consultas públicas em conversa privada\n'
+        '/pncp termo — contratações\n/licitacoes termo — equivalente a /pncp\n'
+        '/atas termo — atas por atualização global\n'
+        'Buscas amostrais de 7 dias, até 5 resultados. 10 consultas por usuário em 60 minutos. '
+        'Fontes: PNCP. Sujeito a teto global e indisponibilidades.')
+
+
+def event(name):
+    logger.warning(json.dumps({'event': name, 'service': 'radar-publico-bot'}))
+
+
+@app.get('/health')
 def health():
-    return {"status": "ok"}
+    return {'status': 'ok'}
 
-@app.post("/telegram/webhook")
+
+async def process(cid, uid, update, text):
+    global paused_until
+    parts = text.split(maxsplit=1)
+    command = parts[0].split('@')[0].lower() if parts else ''
+    if command not in ('/start', '/ajuda', '/pncp', '/licitacoes', '/atas'):
+        return
+    query = command in ('/pncp', '/licitacoes', '/atas')
+    term = None
+    invalid = False
+    if query:
+        try:
+            term = validate_term(parts[1] if len(parts) > 1 else '')
+        except ValueError:
+            invalid = True
+    accepted = False
+    try:
+        accepted = await asyncio.to_thread(store.admit, uid, update, query and not invalid)
+        if not accepted:
+            event('duplicate_update')
+            return
+        if not query:
+            await telegram_send(cid, HELP)
+            return
+        if invalid:
+            await telegram_send(cid, 'Uso: /pncp termo ou /atas termo (2 a 120 caracteres).')
+            return
+        kind = 'atas' if command == '/atas' else 'pncp'
+        day = datetime.now(ZoneInfo('America/Sao_Paulo')).date().isoformat()
+        key = cache_key(kind, normalize(term), day)
+        result = await asyncio.to_thread(store.cache_get, key)
+        if result is None:
+            event('cache_miss')
+            async def reserve():
+                await asyncio.to_thread(store.reserve)
+            result = await asyncio.wait_for(pncp_search(term, kind=kind, reserve=reserve), timeout=30)
+            await asyncio.to_thread(store.cache_set, key, result)
+        else:
+            event('cache_hit')
+        await telegram_send(cid, format_pncp(result))
+        event('query_ok')
+    except LimitReached as exc:
+        reason = str(exc)
+        event('limit_' + reason)
+        if reason in ('global', 'suspended', 'external'):
+            paused_until = time.monotonic()+60
+        await telegram_send(cid, 'Limite operacional atingido. Consultas temporariamente suspensas.' if reason != 'user' else 'Limite de 10 consultas em 60 minutos atingido. Tente mais tarde.')
+    except Exception:
+        event('dependency_failure')
+        paused_until = time.monotonic()+30
+        # Only admitted requests may send an error; persistence failures remain silent.
+        if accepted:
+            try:
+                await telegram_send(cid, 'Fonte ou serviço temporariamente indisponível. Tente novamente mais tarde.')
+            except Exception:
+                event('telegram_failure')
+        return
+
+
+@app.post('/telegram/webhook')
 async def webhook(request: Request):
-    secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
-    header = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-    if not secret or not secrets.compare_digest(header, secret):
-        raise HTTPException(403, "Forbidden")
-
-    data = await request.json()
-    msg = data.get("message") or {}
-    text = (msg.get("text") or "").strip()
-    chat = msg.get("chat") or {}
-    sender = msg.get("from") or {}
-    if chat.get("type") != "private" or sender.get("is_bot"):
-        return {"ok": True}
-    cid = chat.get("id")
-    user_id = sender.get("id")
-    if not isinstance(cid, int) or not isinstance(user_id, int):
-        return {"ok": True}
-
-    command = text.split(maxsplit=1)[0].split("@")[0].lower() if text else ""
-    if command in ("/start", "/ajuda"):
-        await telegram_send(cid, "Radar Público — consultas públicas\n/pncp termo — consulta amostral de contratações recentes\n/licitacoes termo — equivalente a /pncp\n/atas — em desenvolvimento\nLimite: 10 consultas por usuário por hora.")
-    elif command in ("/pncp", "/licitacoes"):
-        term = text.split(maxsplit=1)[1].strip() if " " in text else ""
-        if not term:
-            await telegram_send(cid, "Uso: /pncp viaturas")
-            return {"ok": True}
-        if len(term) > 120:
-            await telegram_send(cid, "O termo deve ter no máximo 120 caracteres.")
-            return {"ok": True}
-        try:
-            allowed = await consume(user_id)
-        except Exception:
-            # Do not bypass limits if the distributed store is unavailable.
-            await telegram_send(cid, "Consultas temporariamente indisponíveis. Tente novamente mais tarde.")
-            return {"ok": True}
-        if not allowed:
-            await telegram_send(cid, "Limite de 10 consultas por hora atingido. Tente novamente mais tarde.")
-            return {"ok": True}
-        try:
-            result = await pncp_search(term)
-            await telegram_send(cid, format_pncp(result))
-        except Exception:
-            await telegram_send(cid, "Consulta ao PNCP temporariamente indisponível. Tente novamente mais tarde.")
-    elif command == "/atas":
-        await telegram_send(cid, "Consulta de atas em desenvolvimento; ainda não está habilitada.")
-    return {"ok": True}
+    secret = os.environ.get('TELEGRAM_WEBHOOK_SECRET', '')
+    header = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
+    if not secret or not secrets.compare_digest(header.encode(), secret.encode()):
+        raise HTTPException(403, 'Forbidden')
+    if os.environ.get('QUERIES_ENABLED', 'true').lower() != 'true' or time.monotonic() < paused_until:
+        return {'ok': True}
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 16384:
+            raise HTTPException(413, 'Payload too large')
+    try:
+        data = json.loads(body)
+        if not isinstance(data, dict):
+            raise ValueError()
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(400, 'Invalid JSON') from None
+    msg = data.get('message')
+    if not isinstance(msg, dict):
+        return {'ok': True}
+    chat, sender = msg.get('chat'), msg.get('from')
+    if not isinstance(chat, dict) or not isinstance(sender, dict):
+        return {'ok': True}
+    cid, uid, update = chat.get('id'), sender.get('id'), data.get('update_id')
+    if (chat.get('type') != 'private' or sender.get('is_bot') or
+            any(type(x) is not int for x in (cid, uid, update)) or uid <= 0 or update < 0):
+        return {'ok': True}
+    text = msg.get('text', '')
+    if not isinstance(text, str) or len(text) > 4096:
+        return {'ok': True}
+    # One worker, bounded concurrency; no work runs after the HTTP response.
+    if lock.locked():
+        raise HTTPException(503, 'Busy')
+    async with lock:
+        await process(cid, uid, update, text.strip())
+    return {'ok': True}
