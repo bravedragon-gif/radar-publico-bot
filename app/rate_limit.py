@@ -1,36 +1,105 @@
-"""Distributed per-user rate limit backed by Firestore transactions.
-
-The Firestore database must exist. Fail closed when unavailable.
-"""
+"""Firestore transactions: rolling user quota, UTC daily budgets and update claims."""
 import asyncio
+import hashlib
 import os
 import time
+from functools import lru_cache
+
 from google.cloud import firestore
 
-LIMIT = 10
-WINDOW_SECONDS = 3600
 
-def _consume(user_id: int, now: int) -> bool:
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT_ID")
-    database = os.environ.get("FIRESTORE_DATABASE", "(default)")
-    client = firestore.Client(project=project or None, database=database)
-    doc = client.collection("radar_publico_rate_limits").document(str(user_id))
-    transaction = client.transaction()
+class LimitReached(Exception):
+    pass
 
-    @firestore.transactional
-    def apply(tx):
-        snap = doc.get(transaction=tx)
-        record = snap.to_dict() if snap.exists else {}
-        start = int(record.get("window_start", now))
-        count = int(record.get("count", 0))
-        if now < start or now - start >= WINDOW_SECONDS:
-            start, count = now, 0
-        if count >= LIMIT:
-            return False
-        tx.set(doc, {"window_start": start, "count": count + 1})
-        return True
 
-    return apply(transaction)
+@lru_cache(maxsize=1)
+def client():
+    return firestore.Client(project=os.environ.get('GOOGLE_CLOUD_PROJECT', 'dodfpmdfbot'), database='(default)')
 
-async def consume(user_id: int) -> bool:
-    return await asyncio.to_thread(_consume, user_id, int(time.time()))
+
+def transition(record, now, query, user_limit=10):
+    timestamps = [t for t in record.get('timestamps', []) if now-3600 < t <= now]
+    if query and len(timestamps) >= user_limit:
+        raise LimitReached('user')
+    return {'timestamps': timestamps + ([now] if query else [])}
+
+
+class Store:
+    def admit(self, user_id, update_id, query, now=None):
+        now = int(time.time()) if now is None else now
+        db = client()
+        control = db.document('radar_publico_ops/control')
+        global_doc = db.document('radar_publico_ops/budget')
+        # One bounded document per user, containing recent update IDs and timestamps.
+        user = db.document(f'radar_publico_users/{user_id}')
+
+        @firestore.transactional
+        def apply(tx):
+            config = control.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
+            budget = global_doc.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
+            record = user.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
+            if config.get('suspended', False):
+                raise LimitReached('suspended')
+            if budget.get('day') != now//86400:
+                budget = {'day': now//86400, 'updates': 0, 'external': 0}
+            recent = {k:v for k,v in record.get('updates', {}).items() if now-86400 < v <= now}
+            if str(update_id) in recent:
+                return False
+            if budget.get('updates', 0) >= int(os.getenv('GLOBAL_DAILY_UPDATES', '1500')):
+                raise LimitReached('global')
+            denied = False
+            try:
+                state = transition(record, now, query)
+            except LimitReached:
+                denied = True
+                state = transition(record, now, False)
+            # At most 32 IDs; Telegram retries are normally near the original delivery.
+            recent[str(update_id)] = now
+            state['updates'] = dict(sorted(recent.items(), key=lambda x:x[1])[-32:])
+            tx.set(user, state)
+            tx.set(global_doc, dict(budget, updates=budget.get('updates', 0)+1))
+            return 'user' if denied else True
+        result = apply(db.transaction(max_attempts=3))
+        if result == 'user':
+            raise LimitReached('user')
+        return result
+
+    def reserve(self):
+        db = client()
+        ref = db.document('radar_publico_ops/budget')
+        @firestore.transactional
+        def apply(tx):
+            data = ref.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
+            now = int(time.time())
+            if data.get('day') != now//86400:
+                data = {'day': now//86400, 'updates': 0, 'external': 0}
+            if data.get('external', 0) >= int(os.getenv('GLOBAL_DAILY_EXTERNAL', '400')):
+                raise LimitReached('external')
+            tx.set(ref, dict(data, external=data.get('external', 0)+1))
+        apply(db.transaction(max_attempts=3))
+
+    def claim_publication(self, week, digest):
+        # create is atomic; an existing or uncertain claim requires operator reconciliation.
+        client().document(f'radar_publico_publications/{week}').create(
+            {'sha256': digest, 'claimed_at': int(time.time()), 'status': 'claimed'},
+            retry=None, timeout=5)
+
+    def cache_get(self, key):
+        slot = int(key[:8], 16) % 256
+        data = client().document(f'radar_publico_cache/{slot}').get(retry=None, timeout=5).to_dict() or {}
+        return data.get('result') if data.get('key') == key and data.get('expires', 0) > time.time() else None
+
+    def cache_set(self, key, result):
+        slot = int(key[:8], 16) % 256
+        client().document(f'radar_publico_cache/{slot}').set({'key': key, 'expires': int(time.time())+1800, 'result': result}, retry=None, timeout=5)
+
+
+store = Store()
+
+
+def cache_key(kind, term, day):
+    return hashlib.sha256(f'v2:{kind}:{term}:{day}'.encode()).hexdigest()
+
+
+async def consume(user_id):
+    return await asyncio.to_thread(store.admit, user_id, time.time_ns(), True)
