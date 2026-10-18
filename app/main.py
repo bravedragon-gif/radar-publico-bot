@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import time
+import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -26,8 +27,22 @@ HELP = ('Radar Público — consultas públicas em conversa privada\n'
         'Fontes: PNCP. Sujeito a teto global e indisponibilidades.')
 
 
-def event(name):
-    logger.warning(json.dumps({'event': name, 'service': 'radar-publico-bot'}))
+def event(name, **details):
+    logger.warning(json.dumps({'event': name, 'service': 'radar-publico-bot', **details}))
+
+
+def failure_details(exc, stage):
+    # Never log exception messages, URLs, headers, payloads or user identifiers.
+    details = {'stage': stage, 'category': 'unexpected'}
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        details['category'] = 'timeout'
+    elif isinstance(exc, httpx.HTTPStatusError):
+        details.update(category='http_status', status=exc.response.status_code)
+    elif isinstance(exc, httpx.RequestError):
+        details['category'] = 'network'
+    elif isinstance(exc, ValueError):
+        details['category'] = 'invalid_response'
+    return details
 
 
 @app.get('/health')
@@ -50,30 +65,42 @@ async def process(cid, uid, update, text):
         except ValueError:
             invalid = True
     accepted = False
+    stage = 'admission'
     try:
         accepted = await asyncio.to_thread(store.admit, uid, update, query and not invalid)
         if not accepted:
             event('duplicate_update')
             return
         if not query:
+            stage = 'telegram'
             await telegram_send(cid, HELP)
             return
         if invalid:
+            stage = 'telegram'
             await telegram_send(cid, 'Uso: /pncp termo ou /atas termo (2 a 120 caracteres).')
             return
         kind = 'atas' if command == '/atas' else 'pncp'
         day = datetime.now(ZoneInfo('America/Sao_Paulo')).date().isoformat()
         key = cache_key(kind, normalize(term), day)
+        stage = 'cache_read'
         result = await asyncio.to_thread(store.cache_get, key)
         if result is None:
             event('cache_miss')
             async def reserve():
+                nonlocal stage
+                stage = 'budget'
                 await asyncio.to_thread(store.reserve)
+                stage = 'pncp'
+            stage = 'pncp'
             result = await asyncio.wait_for(pncp_search(term, kind=kind, reserve=reserve), timeout=30)
+            stage = 'cache_write'
             await asyncio.to_thread(store.cache_set, key, result)
         else:
             event('cache_hit')
-        await telegram_send(cid, format_pncp(result))
+        stage = 'format'
+        message = format_pncp(result)
+        stage = 'telegram'
+        await telegram_send(cid, message)
         event('query_ok')
     except LimitReached as exc:
         reason = str(exc)
@@ -81,8 +108,8 @@ async def process(cid, uid, update, text):
         if reason in ('global', 'suspended', 'external'):
             paused_until = time.monotonic()+60
         await telegram_send(cid, 'Limite operacional atingido. Consultas temporariamente suspensas.' if reason != 'user' else 'Limite de 10 consultas em 60 minutos atingido. Tente mais tarde.')
-    except Exception:
-        event('dependency_failure')
+    except Exception as exc:
+        event('dependency_failure', **failure_details(exc, stage))
         paused_until = time.monotonic()+30
         # Only admitted requests may send an error; persistence failures remain silent.
         if accepted:

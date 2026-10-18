@@ -40,7 +40,7 @@ async def pncp_search(term, days=7, limit=5, kind='pncp', reserve=None, client=N
     params = {'dataInicial': (today-timedelta(days=days-1)).strftime('%Y%m%d'),
               'dataFinal': today.strftime('%Y%m%d'), 'tamanhoPagina': 50}
     own = client is None
-    client = client or httpx.AsyncClient(timeout=httpx.Timeout(5), follow_redirects=False)
+    client = client or httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5), follow_redirects=False)
     items, seen, pages = [], set(), 0
     try:
         for modality in ((None,) if kind == 'atas' else (6, 8, 4, 5)):
