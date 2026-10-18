@@ -3,12 +3,32 @@ import os
 import re
 import unicodedata
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
+import time
 from zoneinfo import ZoneInfo
 
 import httpx
 
 PNCP = 'https://pncp.gov.br/api/consulta/v1'
 TELEGRAM = 'https://api.telegram.org'
+
+
+class PNCPRateLimited(Exception):
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
+        super().__init__('PNCP rate limit')
+
+
+def retry_delay(value, now=None):
+    now = time.time() if now is None else now
+    try:
+        seconds = int(value)
+    except (ValueError, TypeError):
+        try:
+            seconds = int(parsedate_to_datetime(value).timestamp() - now)
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            seconds = 300
+    return max(60, seconds)
 
 
 def normalize(term):
@@ -51,6 +71,8 @@ async def pncp_search(term, days=7, limit=5, kind='pncp', reserve=None, client=N
                 if reserve:
                     await reserve()
                 r = await client.get(f"{PNCP}/{'atas/atualizacao' if kind == 'atas' else 'contratacoes/publicacao'}", params=query)
+                if r.status_code == 429:
+                    raise PNCPRateLimited(retry_delay(r.headers.get('Retry-After')))
                 r.raise_for_status()
                 pages += 1
                 if r.status_code == 204:

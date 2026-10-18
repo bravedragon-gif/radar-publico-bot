@@ -71,6 +71,21 @@ def test_external_cap(db,monkeypatch):
         store.reserve()
 
 
+def test_pncp_cooldown_survives_new_store_and_daily_reset(db,monkeypatch):
+    monkeypatch.setattr(rl.time,'time',lambda:86350)
+    store=rl.Store()
+    store.defer_pncp(300)
+    store.defer_pncp(60)
+    assert db.data['radar_publico_ops/budget']['pncp_retry_at'] == 86650
+    # Help/admission still works across midnight and preserves the cooldown.
+    store.admit(1,1,False,86410)
+    monkeypatch.setattr(rl.time,'time',lambda:86410)
+    with pytest.raises(rl.LimitReached,match='pncp'):
+        rl.Store().reserve()
+    monkeypatch.setattr(rl.time,'time',lambda:86650)
+    rl.Store().reserve()
+
+
 def test_cache_expiry(db,monkeypatch):
     store=rl.Store()
     store.cache_set('abc123',{'items':[]})

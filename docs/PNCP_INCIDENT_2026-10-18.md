@@ -26,3 +26,24 @@ cabeçalhos, conteúdo da consulta ou identificadores de usuários.
 Validação em produção pendente: implantar apenas o Radar, enviar uma nova consulta
 e verificar `query_ok` ou a categoria segura da falha. A reprodução local não
 comprova recuperação do serviço no Cloud Run.
+
+## Causa confirmada após implantação do diagnóstico
+
+Em 18/10, às 12:35:33 e 12:53:40 (Brasília), a revisão nova registrou
+`stage=pncp`, `category=http_status`, `status=429`. A fonte recusou as chamadas;
+o aumento de timeout não resolveu esse incidente. Não há evidência para afirmar
+se o limite é por IP, rede, endpoint ou outra política da fonte.
+
+Tratamento adicional: HTTP 429 interrompe imediatamente a busca, sem retries ou
+resultados parciais. O bot persiste no documento de orçamento a data mínima para
+novas chamadas, respeitando Retry-After em segundos ou data HTTP (mínimo 60s;
+ausente/inválido: 300s). Reservas seguintes verificam esse prazo na leitura que já
+faziam. Registrar o bloqueio custa uma leitura e uma escrita adicionais por 429.
+O prazo sobrevive ao reinício do processo e à virada de dia. Ajuda e cache não
+dependem dessa pausa. Falha ao persistir a pausa mantém bloqueio local seguro.
+
+A mensagem explica o HTTP 429 e oferece o portal oficial para consulta manual.
+Isso trata o bloqueio com segurança; não garante que a fonte aceitará chamadas
+depois do prazo, nem contorna sua política de acesso.
+
+Validação local ampliada: 57 testes aprovados, 1 ignorado, 2 avisos de depreciação.

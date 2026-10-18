@@ -10,7 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
-from app.core import format_pncp, normalize, pncp_search, telegram_send, validate_term
+from app.core import PNCPRateLimited, format_pncp, normalize, pncp_search, telegram_send, validate_term
 from app.rate_limit import LimitReached, cache_key, store
 
 app = FastAPI(title='Radar Público', docs_url=None, redoc_url=None, openapi_url=None)
@@ -20,6 +20,9 @@ logging.getLogger('httpx').setLevel(logging.CRITICAL)
 logging.getLogger('httpcore').setLevel(logging.CRITICAL)
 lock = asyncio.Lock()
 paused_until = 0.0
+PNCP_LIMIT_MESSAGE = ('O PNCP recusou novas consultas por limite de acesso (HTTP 429). '
+                      'O bot pausou as chamadas à fonte; a liberação depende do PNCP. '
+                      'Você pode consultar diretamente: https://pncp.gov.br/app/editais')
 HELP = ('Radar Público — consultas públicas em conversa privada\n'
         '/pncp termo — contratações\n/licitacoes termo — equivalente a /pncp\n'
         '/atas termo — atas por atualização global\n'
@@ -102,12 +105,24 @@ async def process(cid, uid, update, text):
         stage = 'telegram'
         await telegram_send(cid, message)
         event('query_ok')
+    except PNCPRateLimited as exc:
+        event('pncp_rate_limited', retry_after_seconds=exc.retry_after)
+        try:
+            await asyncio.to_thread(store.defer_pncp, exc.retry_after)
+        except Exception as storage_exc:
+            event('dependency_failure', **failure_details(storage_exc, 'pncp_cooldown_write'))
+            paused_until = time.monotonic() + exc.retry_after
+        try:
+            await telegram_send(cid, PNCP_LIMIT_MESSAGE)
+        except Exception:
+            event('telegram_failure')
     except LimitReached as exc:
         reason = str(exc)
         event('limit_' + reason)
         if reason in ('global', 'suspended', 'external'):
             paused_until = time.monotonic()+60
-        await telegram_send(cid, 'Limite operacional atingido. Consultas temporariamente suspensas.' if reason != 'user' else 'Limite de 10 consultas em 60 minutos atingido. Tente mais tarde.')
+        await telegram_send(cid, PNCP_LIMIT_MESSAGE if reason == 'pncp' else (
+            'Limite operacional atingido. Consultas temporariamente suspensas.' if reason != 'user' else 'Limite de 10 consultas em 60 minutos atingido. Tente mais tarde.'))
     except Exception as exc:
         event('dependency_failure', **failure_details(exc, stage))
         paused_until = time.monotonic()+30
