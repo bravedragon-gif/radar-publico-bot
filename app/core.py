@@ -54,7 +54,7 @@ def official_link(item, kind='pncp'):
 
 async def pncp_search(term, days=7, limit=5, kind='pncp', reserve=None, client=None, today=None):
     term = validate_term(term)
-    if kind not in ('pncp', 'atas') or not 1 <= days <= 30 or not 1 <= limit <= 5:
+    if kind not in ('pncp', 'licitacoes', 'atas') or not 1 <= days <= 30 or not 1 <= limit <= 5:
         raise ValueError('Parâmetros inválidos')
     today = today or datetime.now(ZoneInfo('America/Sao_Paulo')).date()
     params = {'dataInicial': (today-timedelta(days=days-1)).strftime('%Y%m%d'),
@@ -63,7 +63,7 @@ async def pncp_search(term, days=7, limit=5, kind='pncp', reserve=None, client=N
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5), follow_redirects=False)
     items, seen, pages = [], set(), 0
     try:
-        for modality in ((None,) if kind == 'atas' else (6, 8, 4, 5)):
+        for modality in ((None,) if kind == 'atas' else (6, 4, 5) if kind == 'licitacoes' else (6, 8, 4, 5)):
             for page in (1, 2):
                 query = dict(params, pagina=page)
                 if modality is not None:
@@ -104,7 +104,7 @@ def format_pncp(result):
         result = {'items': result, 'kind': 'pncp', 'pages': 0, 'start': '?', 'end': '?'}
     kind = result['kind']
     heading = (f"Busca amostral, não exaustiva. {result['pages']} páginas; período {result['start']} a {result['end']}. "
-               + ('Atas por atualização global; não garante vigência ou adesão. Links levam à contratação de origem.' if kind == 'atas' else 'Publicações nas modalidades 6, 8, 4 e 5; até 2 páginas por modalidade.')
+               + ('Atas por atualização global; não garante vigência ou adesão. Links levam à contratação de origem.' if kind == 'atas' else 'Publicações nas modalidades 6, 4 e 5; até 2 páginas por modalidade.' if kind == 'licitacoes' else 'Publicações nas modalidades 6, 8, 4 e 5; até 2 páginas por modalidade.')
                + '\nMáximo de 5 resultados; filtro textual local.\n\n')
     out = []
     for x in result['items']:
@@ -115,12 +115,15 @@ def format_pncp(result):
     return heading + ('\n\n'.join(out) if out else 'Nenhum resultado na amostra. Isso não comprova inexistência no PNCP.')
 
 
-async def telegram_send(chat_id, text, token=None):
+async def telegram_send(chat_id, text, token=None, reply_markup=None):
     token = token or os.environ['TELEGRAM_BOT_TOKEN']
     try:
         async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
             for i in range(0, len(text), 1800):
-                r = await client.post(f'{TELEGRAM}/bot{token}/sendMessage', json={'chat_id': chat_id, 'text': text[i:i+1800], 'disable_web_page_preview': True})
+                payload = {'chat_id': chat_id, 'text': text[i:i+1800], 'disable_web_page_preview': True}
+                if reply_markup is not None and i == 0:
+                    payload['reply_markup'] = reply_markup
+                r = await client.post(f'{TELEGRAM}/bot{token}/sendMessage', json=payload)
                 r.raise_for_status()
                 if not r.json().get('ok'):
                     raise ValueError('Telegram rejeitou envio')

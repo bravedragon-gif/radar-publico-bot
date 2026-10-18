@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import date
 
 import httpx
@@ -97,3 +98,16 @@ def test_telegram_error_is_sanitized(monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         run(telegram_send(1,'hello'))
     assert 'never-print-this' not in str(exc.value)
+
+
+def test_reply_keyboard_sent_only_with_first_chunk(monkeypatch):
+    payloads=[]
+    def handler(req):
+        payloads.append(json.loads(req.content))
+        return httpx.Response(200,json={'ok':True})
+    original=httpx.AsyncClient
+    monkeypatch.setattr(httpx,'AsyncClient',lambda **kwargs:original(transport=httpx.MockTransport(handler),**kwargs))
+    keyboard={'keyboard':[[{'text':'PNCP · Atas'}]],'resize_keyboard':True}
+    run(telegram_send(123,'x'*1801,token='test-only',reply_markup=keyboard))
+    assert payloads[0]['reply_markup'] == keyboard
+    assert 'reply_markup' not in payloads[1]

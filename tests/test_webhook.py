@@ -15,7 +15,9 @@ def env(monkeypatch):
     monkeypatch.setenv('QUERIES_ENABLED','true')
     main.paused_until = 0
     calls = []
-    monkeypatch.setattr(main,'telegram_send',AsyncMock(side_effect=lambda cid,text: calls.append(text)))
+    monkeypatch.setattr(main,'telegram_send',AsyncMock(side_effect=lambda cid,text,**kwargs: calls.append(text)))
+    monkeypatch.setattr(main.store,'menu_get',lambda uid:None)
+    monkeypatch.setattr(main.store,'menu_set',lambda *args:None)
     monkeypatch.setattr(main.store,'admit',lambda *args: True)
     monkeypatch.setattr(main.store,'cache_get',lambda key: None)
     monkeypatch.setattr(main.store,'cache_set',lambda *args: None)
@@ -38,6 +40,82 @@ def test_public_commands(env,command):
     assert post(client,command).status_code == 200
     assert len(calls) == 1
     assert search.await_count == (0 if command in ('/start','/ajuda') else 1)
+
+
+@pytest.mark.parametrize('source',['pncp','compras'])
+def test_menu_keyboard_and_choice(env,monkeypatch,source):
+    client,calls,search=env
+    admissions=[]
+    monkeypatch.setattr(main.store,'admit',lambda uid,update,query: admissions.append(query) or True)
+    saved=[]
+    monkeypatch.setattr(main.store,'menu_set',lambda *args:saved.append(args))
+    post(client,'/'+source)
+    markup=main.telegram_send.call_args.kwargs['reply_markup']
+    assert len(markup['keyboard']) == 4
+    assert [r[0]['text'].split(' · ')[-1] for r in markup['keyboard'][:3]] == ['Licitações','Atas','Pesquisa']
+    post(client,markup['keyboard'][1][0]['text'])
+    assert saved[-1] == (999999,source,'atas')
+    assert 'Digite' in calls[-1] and not search.called
+    assert admissions == [False,False]
+
+
+def test_plain_term_uses_selected_source(env,monkeypatch):
+    client,calls,search=env
+    monkeypatch.setattr(main.store,'menu_get',lambda uid:{'source':'pncp','kind':'atas'})
+    post(client,'viaturas')
+    assert search.call_args.args == ('viaturas',)
+    assert search.call_args.kwargs['kind'] == 'atas'
+
+
+def test_compras_does_not_call_pncp(env,monkeypatch):
+    client,calls,search=env
+    result={'items':[],'pages':1,'start':'2026-10-12','end':'2026-10-18','kind':'atas'}
+    purchases=AsyncMock(return_value=result)
+    monkeypatch.setattr(main,'compras_search',purchases)
+    monkeypatch.setattr(main.store,'menu_get',lambda uid:{'source':'compras','kind':'atas'})
+    keys=[]
+    monkeypatch.setattr(main.store,'cache_get',lambda key:keys.append(key) or None)
+    post(client,'viaturas')
+    assert purchases.await_count == 1 and not search.called
+    assert 'Compras.gov.br' in calls[-1]
+    assert keys == [main.cache_key('compras_atas','viaturas',main.datetime.now(main.ZoneInfo('America/Sao_Paulo')).date().isoformat())]
+
+
+def test_no_context_explains_and_cancel_clears(env,monkeypatch):
+    client,calls,search=env
+    post(client,'viaturas')
+    assert 'expira' in calls[-1] and not search.called
+    saved=[]
+    monkeypatch.setattr(main.store,'menu_set',lambda *args:saved.append(args))
+    post(client,'/cancelar')
+    assert saved == [(999999,)] and 'encerrada' in calls[-1]
+
+
+def test_general_pncp_fetches_both_categories(env,monkeypatch):
+    client,calls,search=env
+    monkeypatch.setattr(main.store,'menu_get',lambda uid:{'source':'pncp','kind':'pesquisa'})
+    post(client,'viaturas')
+    assert [call.kwargs['kind'] for call in search.call_args_list] == ['pncp','atas']
+
+
+def test_session_read_failure_never_fetches(env,monkeypatch):
+    client,calls,search=env
+    def broken(uid):
+        raise RuntimeError('private-session')
+    monkeypatch.setattr(main.store,'menu_get',broken)
+    assert post(client,'viaturas').status_code == 200
+    assert not search.called and not calls
+
+
+def test_menu_query_obeys_same_user_limit(env,monkeypatch):
+    client,calls,search=env
+    monkeypatch.setattr(main.store,'menu_get',lambda uid:{'source':'pncp','kind':'licitacoes'})
+    def denied(uid,update,query):
+        assert query is True
+        raise LimitReached('user')
+    monkeypatch.setattr(main.store,'admit',denied)
+    post(client,'viaturas')
+    assert not search.called and '10 consultas' in calls[-1]
 
 
 def test_auth_and_bad_input(env):

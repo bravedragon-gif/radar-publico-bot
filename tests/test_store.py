@@ -15,7 +15,10 @@ class Ref:
     def get(self,transaction=None,**kwargs):
         return Snap(self.db.data.get(self.name))
     def set(self,data,**kwargs):
-        self.db.data[self.name]=data
+        if kwargs.get('merge'):
+            self.db.data[self.name]=dict(self.db.data.get(self.name) or {}, **data)
+        else:
+            self.db.data[self.name]=data
 
 
 class DB:
@@ -92,6 +95,30 @@ def test_cache_expiry(db,monkeypatch):
     assert store.cache_get('abc123') == {'items':[]}
     monkeypatch.setattr(rl.time,'time',lambda:10**12)
     assert store.cache_get('abc123') is None
+
+
+def test_menu_survives_admission_and_expires(db,monkeypatch):
+    monkeypatch.setattr(rl.time,'time',lambda:1000)
+    store=rl.Store()
+    store.menu_set(1,'compras','pesquisa')
+    store.admit(1,1,False,1001)
+    assert rl.Store().menu_get(1)['source'] == 'compras'
+    assert rl.Store().menu_get(2) is None
+    monkeypatch.setattr(rl.time,'time',lambda:1600)
+    assert store.menu_get(1) is None
+    store.menu_set(1)
+    assert store.menu_get(1) is None
+
+
+def test_source_cooldowns_are_independent(db,monkeypatch):
+    monkeypatch.setattr(rl.time,'time',lambda:86350)
+    store=rl.Store()
+    store.defer_pncp(300,'compras')
+    store.reserve('pncp')
+    store.admit(1,1,False,86401)
+    monkeypatch.setattr(rl.time,'time',lambda:86401)
+    with pytest.raises(rl.LimitReached,match='compras'):
+        store.reserve('compras')
 
 def test_wrong_cache_key_never_returns_other_query(db):
     store=rl.Store()
