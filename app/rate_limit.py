@@ -42,7 +42,8 @@ class Store:
                 raise LimitReached('suspended')
             if budget.get('day') != now//86400:
                 budget = {'day': now//86400, 'updates': 0, 'external': 0,
-                          'pncp_retry_at': budget.get('pncp_retry_at', 0)}
+                          'pncp_retry_at': budget.get('pncp_retry_at', 0),
+                          'compras_retry_at': budget.get('compras_retry_at', 0)}
             recent = {k:v for k,v in record.get('updates', {}).items() if now-86400 < v <= now}
             if str(update_id) in recent:
                 return False
@@ -57,6 +58,8 @@ class Store:
             # At most 32 IDs; Telegram retries are normally near the original delivery.
             recent[str(update_id)] = now
             state['updates'] = dict(sorted(recent.items(), key=lambda x:x[1])[-32:])
+            if 'menu' in record:
+                state['menu'] = record['menu']
             tx.set(user, state)
             tx.set(global_doc, dict(budget, updates=budget.get('updates', 0)+1))
             return 'user' if denied else True
@@ -65,29 +68,39 @@ class Store:
             raise LimitReached('user')
         return result
 
-    def reserve(self):
+    def menu_get(self, user_id):
+        data = client().document(f'radar_publico_users/{user_id}').get(retry=None, timeout=5).to_dict() or {}
+        menu = data.get('menu') or {}
+        return menu if menu.get('expires', 0) > time.time() else None
+
+    def menu_set(self, user_id, source=None, kind=None):
+        client().document(f'radar_publico_users/{user_id}').set(
+            {'menu': {'source': source, 'kind': kind, 'expires': int(time.time())+600} if source else {}},
+            merge=True, retry=None, timeout=5)
+
+    def reserve(self, source='pncp'):
         db = client()
         ref = db.document('radar_publico_ops/budget')
         @firestore.transactional
         def apply(tx):
             data = ref.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
             now = int(time.time())
-            if data.get('pncp_retry_at', 0) > now:
-                raise LimitReached('pncp')
+            if data.get(source+'_retry_at', 0) > now:
+                raise LimitReached(source)
             if data.get('day') != now//86400:
-                data = {'day': now//86400, 'updates': 0, 'external': 0}
+                data = dict(data, day=now//86400, updates=0, external=0)
             if data.get('external', 0) >= int(os.getenv('GLOBAL_DAILY_EXTERNAL', '400')):
                 raise LimitReached('external')
             tx.set(ref, dict(data, external=data.get('external', 0)+1))
         apply(db.transaction(max_attempts=3))
 
-    def defer_pncp(self, seconds):
+    def defer_pncp(self, seconds, source='pncp'):
         db = client()
         ref = db.document('radar_publico_ops/budget')
         @firestore.transactional
         def apply(tx):
             data = ref.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
-            data['pncp_retry_at'] = max(data.get('pncp_retry_at', 0), int(time.time()) + seconds)
+            data[source+'_retry_at'] = max(data.get(source+'_retry_at', 0), int(time.time()) + seconds)
             tx.set(ref, data)
         apply(db.transaction(max_attempts=3))
 

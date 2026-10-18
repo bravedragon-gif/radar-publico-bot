@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Request
 from app.core import PNCPRateLimited, format_pncp, normalize, pncp_search, telegram_send, validate_term
 from app.rate_limit import LimitReached, cache_key, store
+from app.compras import compras_search, format_compras
+from app.menus import CHOICES, KINDS, SOURCES, keyboard, prompt
 
 app = FastAPI(title='Radar Público', docs_url=None, redoc_url=None, openapi_url=None)
 logger = logging.getLogger('radar')
@@ -24,10 +26,12 @@ PNCP_LIMIT_MESSAGE = ('O PNCP recusou novas consultas por limite de acesso (HTTP
                       'O bot pausou as chamadas à fonte; a liberação depende do PNCP. '
                       'Você pode consultar diretamente: https://pncp.gov.br/app/editais')
 HELP = ('Radar Público — consultas públicas em conversa privada\n'
+        '/pncp — menu PNCP\n/compras — menu Compras.gov.br\n/cancelar — encerrar seleção\n'
         '/pncp termo — contratações\n/licitacoes termo — equivalente a /pncp\n'
         '/atas termo — atas por atualização global\n'
         'Buscas amostrais de 7 dias, até 5 resultados. 10 consultas por usuário em 60 minutos. '
-        'Fontes: PNCP. Sujeito a teto global e indisponibilidades.')
+        'Fontes: PNCP e Compras.gov.br. Pesquisa é busca geral por termo, não pesquisa de preços. '
+        'Sujeito a teto global e indisponibilidades.')
 
 
 def event(name, **details):
@@ -57,9 +61,22 @@ async def process(cid, uid, update, text):
     global paused_until
     parts = text.split(maxsplit=1)
     command = parts[0].split('@')[0].lower() if parts else ''
-    if command not in ('/start', '/ajuda', '/pncp', '/licitacoes', '/atas'):
+    if command.startswith('/') and command not in ('/start', '/ajuda', '/pncp', '/compras', '/licitacoes', '/atas', '/cancelar'):
         return
+    source, selection = ('compras' if command == '/compras' else 'pncp'), None
+    action = 'search'
+    kind = 'atas' if command == '/atas' else 'licitacoes'
+    if command in ('/pncp', '/compras') and len(parts) == 1:
+        action = 'menu'
+    elif text in CHOICES:
+        source, kind = CHOICES[text]
+        action = 'choose'
+    elif command in ('/pncp', '/compras') and len(parts) == 2 and parts[1].lower() in KINDS:
+        kind, action = parts[1].lower(), 'choose'
+    elif command in ('/start', '/ajuda', '/cancelar'):
+        action = 'help' if command != '/cancelar' else 'cancel'
     query = command in ('/pncp', '/licitacoes', '/atas')
+    query = action == 'search' and (query or command == '/compras')
     term = None
     invalid = False
     if query:
@@ -70,21 +87,44 @@ async def process(cid, uid, update, text):
     accepted = False
     stage = 'admission'
     try:
+        if not command.startswith('/') and action == 'search':
+            selection = await asyncio.to_thread(store.menu_get, uid)
+            if (selection and selection.get('source') in SOURCES and selection.get('kind') in KINDS):
+                source, kind, query = selection['source'], selection['kind'], True
+                try:
+                    term = validate_term(text)
+                except ValueError:
+                    invalid = True
+            else:
+                action = 'expired'
         accepted = await asyncio.to_thread(store.admit, uid, update, query and not invalid)
         if not accepted:
             event('duplicate_update')
             return
         if not query:
             stage = 'telegram'
-            await telegram_send(cid, HELP)
+            if action == 'menu':
+                await asyncio.to_thread(store.menu_set, uid)
+                await telegram_send(cid, f'{SOURCES[source]} — escolha o tipo de consulta:', reply_markup=keyboard(source))
+            elif action == 'choose':
+                await asyncio.to_thread(store.menu_set, uid, source, kind)
+                await telegram_send(cid, prompt(source, kind), reply_markup={'remove_keyboard': True})
+            elif action == 'cancel':
+                await asyncio.to_thread(store.menu_set, uid)
+                await telegram_send(cid, 'Seleção encerrada. Use /pncp ou /compras.', reply_markup={'remove_keyboard': True})
+            elif action == 'expired':
+                await telegram_send(cid, 'Escolha a fonte e o tipo em /pncp ou /compras; a seleção expira em 10 minutos.')
+            else:
+                await telegram_send(cid, HELP)
             return
         if invalid:
             stage = 'telegram'
             await telegram_send(cid, 'Uso: /pncp termo ou /atas termo (2 a 120 caracteres).')
             return
-        kind = 'atas' if command == '/atas' else 'pncp'
+        if source == 'pncp' and kind == 'licitacoes' and selection is None:
+            kind = 'pncp'
         day = datetime.now(ZoneInfo('America/Sao_Paulo')).date().isoformat()
-        key = cache_key(kind, normalize(term), day)
+        key = cache_key(kind if source == 'pncp' else 'compras_'+kind, normalize(term), day)
         stage = 'cache_read'
         result = await asyncio.to_thread(store.cache_get, key)
         if result is None:
@@ -92,28 +132,48 @@ async def process(cid, uid, update, text):
             async def reserve():
                 nonlocal stage
                 stage = 'budget'
-                await asyncio.to_thread(store.reserve)
-                stage = 'pncp'
-            stage = 'pncp'
-            result = await asyncio.wait_for(pncp_search(term, kind=kind, reserve=reserve), timeout=30)
+                if source == 'compras':
+                    await asyncio.to_thread(store.reserve, source)
+                else:
+                    await asyncio.to_thread(store.reserve)
+                stage = source
+            stage = source
+            if source == 'compras':
+                result = await asyncio.wait_for(compras_search(term, kind=kind, reserve=reserve), timeout=30)
+            elif kind == 'pesquisa':
+                async def general():
+                    first = await pncp_search(term, kind='pncp', reserve=reserve)
+                    second = await pncp_search(term, kind='atas', reserve=reserve)
+                    second['items'] = second['items'][:2 if first['items'] else 5]
+                    first['items'] = first['items'][:5-len(second['items'])]
+                    return {'sections': [first, second]}
+                result = await asyncio.wait_for(general(), timeout=30)
+            else:
+                result = await asyncio.wait_for(pncp_search(term, kind=kind, reserve=reserve), timeout=30)
             stage = 'cache_write'
             await asyncio.to_thread(store.cache_set, key, result)
         else:
             event('cache_hit')
         stage = 'format'
-        message = format_pncp(result)
+        message = (format_compras(result) if source == 'compras' else
+                   '\n\n'.join(format_pncp(section) for section in result['sections'])
+                   if kind == 'pesquisa' else format_pncp(result))
         stage = 'telegram'
         await telegram_send(cid, message)
         event('query_ok')
     except PNCPRateLimited as exc:
-        event('pncp_rate_limited', retry_after_seconds=exc.retry_after)
+        event(source+'_rate_limited', retry_after_seconds=exc.retry_after)
         try:
-            await asyncio.to_thread(store.defer_pncp, exc.retry_after)
+            if source == 'compras':
+                await asyncio.to_thread(store.defer_pncp, exc.retry_after, source)
+            else:
+                await asyncio.to_thread(store.defer_pncp, exc.retry_after)
         except Exception as storage_exc:
             event('dependency_failure', **failure_details(storage_exc, 'pncp_cooldown_write'))
             paused_until = time.monotonic() + exc.retry_after
         try:
-            await telegram_send(cid, PNCP_LIMIT_MESSAGE)
+            await telegram_send(cid, PNCP_LIMIT_MESSAGE if source == 'pncp' else
+                'Compras.gov.br limitou o acesso (HTTP 429). Consultas à fonte pausadas. https://www.gov.br/compras')
         except Exception:
             event('telegram_failure')
     except LimitReached as exc:
@@ -121,7 +181,7 @@ async def process(cid, uid, update, text):
         event('limit_' + reason)
         if reason in ('global', 'suspended', 'external'):
             paused_until = time.monotonic()+60
-        await telegram_send(cid, PNCP_LIMIT_MESSAGE if reason == 'pncp' else (
+        await telegram_send(cid, 'Compras.gov.br limitou o acesso (HTTP 429). Consultas à fonte pausadas. https://www.gov.br/compras' if reason == 'compras' else PNCP_LIMIT_MESSAGE if reason == 'pncp' else (
             'Limite operacional atingido. Consultas temporariamente suspensas.' if reason != 'user' else 'Limite de 10 consultas em 60 minutos atingido. Tente mais tarde.'))
     except Exception as exc:
         event('dependency_failure', **failure_details(exc, stage))

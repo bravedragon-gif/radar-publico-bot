@@ -1,6 +1,8 @@
 # Radar Público
 
-MVP Python/FastAPI para `@Log_pmdf_bot`. Comandos públicos em conversa privada: `/start`, `/ajuda`, `/pncp termo`, `/licitacoes termo` e `/atas termo`.
+MVP Python/FastAPI para `@Log_pmdf_bot`. Comandos públicos em conversa privada: `/start`, `/ajuda`, `/pncp`, `/compras`, `/cancelar`, `/pncp termo`, `/licitacoes termo` e `/atas termo`.
+
+`/pncp` e `/compras` abrem submenus com **Licitações**, **Atas** e **Pesquisa**. Após escolher o botão, envie o termo em texto livre. A seleção fica no Firestore por 10 minutos e sobrevive a reinícios. `/cancelar` encerra. Pesquisa combina contratações e atas da fonte selecionada; não compara preços. Veja [fluxo e validação](docs/MENUS.md).
 
 As buscas consultam uma **amostra** do PNCP dos últimos sete dias, filtrada localmente pelo objeto: até duas páginas de 50 registros por modalidade (6, 8, 4, 5), ou duas páginas de atas por atualização global. Até cinco resultados. Ausência na amostra não comprova inexistência. Atas podem estar vencidas/canceladas; confirme vigência e possibilidade de adesão na fonte oficial.
 
