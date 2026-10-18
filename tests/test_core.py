@@ -3,7 +3,7 @@ from datetime import date
 
 import httpx
 import pytest
-from app.core import format_pncp, official_link, pncp_search, telegram_send, validate_term
+from app.core import PNCPRateLimited, retry_delay, format_pncp, official_link, pncp_search, telegram_send, validate_term
 
 
 def run(coro):
@@ -56,8 +56,27 @@ def test_external_failures(status,payload):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(status,json=payload))) as client:
             return await pncp_search('viaturas',client=client)
-    with pytest.raises((ValueError,httpx.HTTPError)):
+    with pytest.raises((ValueError,httpx.HTTPError,PNCPRateLimited)):
         run(scenario())
+
+
+@pytest.mark.parametrize('header,expected', [(None,300), ('invalid',300), ('120',120), ('0',60),
+    ('Thu, 01 Jan 1970 00:10:00 GMT',500)])
+def test_retry_after(header,expected):
+    assert retry_delay(header,now=100) == expected
+
+
+def test_429_stops_without_retry_or_partial_result():
+    calls = []
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(429,headers={'Retry-After':'600'})
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await pncp_search('viaturas',client=client)
+    with pytest.raises(PNCPRateLimited) as exc:
+        run(scenario())
+    assert exc.value.retry_after == 600 and len(calls) == 1
 
 
 def test_no_content():

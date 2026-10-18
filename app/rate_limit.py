@@ -41,7 +41,8 @@ class Store:
             if config.get('suspended', False):
                 raise LimitReached('suspended')
             if budget.get('day') != now//86400:
-                budget = {'day': now//86400, 'updates': 0, 'external': 0}
+                budget = {'day': now//86400, 'updates': 0, 'external': 0,
+                          'pncp_retry_at': budget.get('pncp_retry_at', 0)}
             recent = {k:v for k,v in record.get('updates', {}).items() if now-86400 < v <= now}
             if str(update_id) in recent:
                 return False
@@ -71,11 +72,23 @@ class Store:
         def apply(tx):
             data = ref.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
             now = int(time.time())
+            if data.get('pncp_retry_at', 0) > now:
+                raise LimitReached('pncp')
             if data.get('day') != now//86400:
                 data = {'day': now//86400, 'updates': 0, 'external': 0}
             if data.get('external', 0) >= int(os.getenv('GLOBAL_DAILY_EXTERNAL', '400')):
                 raise LimitReached('external')
             tx.set(ref, dict(data, external=data.get('external', 0)+1))
+        apply(db.transaction(max_attempts=3))
+
+    def defer_pncp(self, seconds):
+        db = client()
+        ref = db.document('radar_publico_ops/budget')
+        @firestore.transactional
+        def apply(tx):
+            data = ref.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
+            data['pncp_retry_at'] = max(data.get('pncp_retry_at', 0), int(time.time()) + seconds)
+            tx.set(ref, data)
         apply(db.transaction(max_attempts=3))
 
     def claim_publication(self, week, digest):

@@ -86,6 +86,29 @@ def test_search_failure_never_caches(env,monkeypatch):
     assert not cache.called
 
 
+def test_pncp_429_persists_cooldown_and_explains_limit(env,monkeypatch):
+    client,calls,search=env
+    search.side_effect=main.PNCPRateLimited(600)
+    deferred=[]
+    monkeypatch.setattr(main.store,'defer_pncp',lambda seconds:deferred.append(seconds))
+    assert post(client).status_code == 200
+    assert deferred == [600] and 'HTTP 429' in calls[0]
+    assert main.paused_until == 0
+
+
+def test_persisted_pncp_cooldown_answers_without_fetch(env):
+    client,calls,search=env
+    async def limited(*args,**kwargs):
+        await kwargs['reserve']()
+    def denied():
+        raise LimitReached('pncp')
+    search.side_effect=limited
+    from unittest.mock import patch
+    with patch.object(main.store,'reserve',denied):
+        post(client)
+    assert 'HTTP 429' in calls[0] and main.paused_until == 0
+
+
 @pytest.mark.parametrize('failure,category,status', [
     (httpx.ReadTimeout('sensitive-url'), 'timeout', None),
     (httpx.ConnectError('sensitive-url'), 'network', None),
