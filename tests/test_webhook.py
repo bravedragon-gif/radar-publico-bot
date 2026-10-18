@@ -1,4 +1,6 @@
 import time
+import json
+import httpx
 from unittest.mock import AsyncMock
 
 import pytest
@@ -82,6 +84,25 @@ def test_search_failure_never_caches(env,monkeypatch):
     monkeypatch.setattr(main.store,'cache_set',cache)
     post(client)
     assert not cache.called
+
+
+@pytest.mark.parametrize('failure,category,status', [
+    (httpx.ReadTimeout('sensitive-url'), 'timeout', None),
+    (httpx.ConnectError('sensitive-url'), 'network', None),
+    (ValueError('sensitive-payload'), 'invalid_response', None),
+    (httpx.HTTPStatusError('sensitive-url', request=httpx.Request('GET','https://example.test'),
+                          response=httpx.Response(503)), 'http_status', 503),
+])
+def test_pncp_failure_logs_only_safe_details(env,caplog,failure,category,status):
+    client,calls,search = env
+    search.side_effect = failure
+    post(client)
+    entry = next(json.loads(r.message) for r in caplog.records if 'dependency_failure' in r.message)
+    assert entry['stage'] == 'pncp'
+    assert entry['category'] == category
+    assert entry.get('status') == status
+    assert 'sensitive' not in caplog.text
+    assert len(calls) == 1 and 'indisponível' in calls[0]
 
 
 def test_kill_switch(env,monkeypatch):
