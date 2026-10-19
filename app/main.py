@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from app.core import PNCPRateLimited, format_pncp, normalize, pncp_search, telegram_send, validate_term
 from app.rate_limit import LimitReached, cache_key, store
 from app.compras import compras_search, format_compras
-from app.menus import CHOICES, KINDS, SOURCES, keyboard, prompt
+from app.menus import CHOICES, KINDS, SOURCES, NAVIGATION, home_keyboard, keyboard, prompt, search_keyboard
 
 app = FastAPI(title='Radar Público', docs_url=None, redoc_url=None, openapi_url=None)
 logger = logging.getLogger('radar')
@@ -26,6 +26,9 @@ PNCP_LIMIT_MESSAGE = ('O PNCP recusou novas consultas por limite de acesso (HTTP
                       'O bot pausou as chamadas à fonte; a liberação depende do PNCP. '
                       'Você pode consultar diretamente: https://pncp.gov.br/app/editais')
 HELP = ('Radar Público — consultas públicas em conversa privada\n'
+        'Toque em PNCP ou Compras.gov.br, escolha Licitações, Atas ou Pesquisa e digite o termo.\n'
+        'Menu principal permite trocar de fonte; Cancelar encerra a seleção.\n\n'
+        'Atalhos opcionais:\n/menu — menu principal\n'
         '/pncp — menu PNCP\n/compras — menu Compras.gov.br\n/cancelar — encerrar seleção\n'
         '/pncp termo — contratações\n/licitacoes termo — equivalente a /pncp\n'
         '/atas termo — atas por atualização global\n'
@@ -59,9 +62,10 @@ def health():
 
 async def process(cid, uid, update, text):
     global paused_until
+    text = NAVIGATION.get(text, text)
     parts = text.split(maxsplit=1)
     command = parts[0].split('@')[0].lower() if parts else ''
-    if command.startswith('/') and command not in ('/start', '/ajuda', '/pncp', '/compras', '/licitacoes', '/atas', '/cancelar'):
+    if command.startswith('/') and command not in ('/start', '/menu', '/ajuda', '/pncp', '/compras', '/licitacoes', '/atas', '/cancelar'):
         return
     source, selection = ('compras' if command == '/compras' else 'pncp'), None
     action = 'search'
@@ -73,8 +77,10 @@ async def process(cid, uid, update, text):
         action = 'choose'
     elif command in ('/pncp', '/compras') and len(parts) == 2 and parts[1].lower() in KINDS:
         kind, action = parts[1].lower(), 'choose'
-    elif command in ('/start', '/ajuda', '/cancelar'):
-        action = 'help' if command != '/cancelar' else 'cancel'
+    elif command in ('/start', '/menu'):
+        action = 'home'
+    elif command in ('/ajuda', '/cancelar'):
+        action = 'help' if command == '/ajuda' else 'cancel'
     query = command in ('/pncp', '/licitacoes', '/atas')
     query = action == 'search' and (query or command == '/compras')
     term = None
@@ -103,23 +109,29 @@ async def process(cid, uid, update, text):
             return
         if not query:
             stage = 'telegram'
-            if action == 'menu':
+            if action == 'home':
+                await asyncio.to_thread(store.menu_set, uid)
+                await telegram_send(cid, 'Radar Público — escolha onde consultar:\n'
+                                    'Toque na fonte, escolha o tipo de consulta e envie o termo.',
+                                    reply_markup=home_keyboard())
+            elif action == 'menu':
                 await asyncio.to_thread(store.menu_set, uid)
                 await telegram_send(cid, f'{SOURCES[source]} — escolha o tipo de consulta:', reply_markup=keyboard(source))
             elif action == 'choose':
                 await asyncio.to_thread(store.menu_set, uid, source, kind)
-                await telegram_send(cid, prompt(source, kind), reply_markup={'remove_keyboard': True})
+                await telegram_send(cid, prompt(source, kind), reply_markup=search_keyboard(source))
             elif action == 'cancel':
                 await asyncio.to_thread(store.menu_set, uid)
-                await telegram_send(cid, 'Seleção encerrada. Use /pncp ou /compras.', reply_markup={'remove_keyboard': True})
+                await telegram_send(cid, 'Seleção encerrada. Escolha uma fonte nos botões para começar novamente.', reply_markup=home_keyboard())
             elif action == 'expired':
-                await telegram_send(cid, 'Escolha a fonte e o tipo em /pncp ou /compras; a seleção expira em 10 minutos.')
+                await telegram_send(cid, 'Escolha a fonte nos botões e depois o tipo de consulta; a seleção expira em 10 minutos.', reply_markup=home_keyboard())
             else:
-                await telegram_send(cid, HELP)
+                await telegram_send(cid, HELP, reply_markup=home_keyboard())
             return
         if invalid:
             stage = 'telegram'
-            await telegram_send(cid, 'Uso: /pncp termo ou /atas termo (2 a 120 caracteres).')
+            await telegram_send(cid, 'Digite um termo de 2 a 120 caracteres, por exemplo: viaturas.',
+                                reply_markup=search_keyboard(source) if selection else home_keyboard())
             return
         if source == 'pncp' and kind == 'licitacoes' and selection is None:
             kind = 'pncp'
@@ -159,7 +171,7 @@ async def process(cid, uid, update, text):
                    '\n\n'.join(format_pncp(section) for section in result['sections'])
                    if kind == 'pesquisa' else format_pncp(result))
         stage = 'telegram'
-        await telegram_send(cid, message)
+        await telegram_send(cid, message, reply_markup=search_keyboard(source) if selection else home_keyboard())
         event('query_ok')
     except PNCPRateLimited as exc:
         event(source+'_rate_limited', retry_after_seconds=exc.retry_after)
