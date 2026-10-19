@@ -31,16 +31,15 @@ jobs:
       REGION: southamerica-east1
       IMAGE: southamerica-east1-docker.pkg.dev/dodfpmdfbot/radar-publico-bot/app
       RUNTIME_SA: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
-      TOKEN_VERSION: ${{ vars.TELEGRAM_TOKEN_VERSION }}
-      WEBHOOK_VERSION: ${{ vars.TELEGRAM_WEBHOOK_VERSION }}
+      DEPLOY_SA: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate deployment inputs
         shell: bash
         run: |
           [[ "$RUNTIME_SA" == *@dodfpmdfbot.iam.gserviceaccount.com ]]
-          [[ "$TOKEN_VERSION" =~ ^[0-9]+$ ]]
-          [[ "$WEBHOOK_VERSION" =~ ^[0-9]+$ ]]
+          [[ "$DEPLOY_SA" == *@dodfpmdfbot.iam.gserviceaccount.com ]]
+          [[ "$DEPLOY_SA" != "$RUNTIME_SA" ]]
       - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -63,7 +62,6 @@ jobs:
             --memory 512Mi --cpu 1 --cpu-throttling --no-cpu-boost \
             --concurrency 1 --timeout 60 \
             --update-env-vars "GOOGLE_CLOUD_PROJECT=dodfpmdfbot,TELEGRAM_CHANNEL_ID=@logisticapmdf,QUERIES_ENABLED=true,GLOBAL_DAILY_UPDATES=1500,GLOBAL_DAILY_EXTERNAL=400" \
-            --update-secrets "TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:$TOKEN_VERSION,TELEGRAM_WEBHOOK_SECRET=radar-webhook-secret:$WEBHOOK_VERSION" \
             --quiet
       - name: Liveness check
         run: curl --fail --max-time 30 --retry 2 https://radar-publico-bot-389001780280.southamerica-east1.run.app/health

@@ -31,6 +31,22 @@ Criar o papel e bindings só após confirmar esses limites. O papel de runtime n
 
 ## Segredos e ambientes GitHub
 
+O deploy de imagem preserva a configuração existente de `TELEGRAM_BOT_TOKEN` e
+`TELEGRAM_WEBHOOK_SECRET`. Não converte variáveis literais em referências a segredos
+durante uma atualização de código: o Cloud Run rejeita essa troca de tipo no mesmo
+campo. Uma migração para Secret Manager deve ser planejada separadamente, mantendo
+os valores em uso e coordenando o webhook. Os números de versão abaixo continuam
+sendo usados pelos workflows de manutenção/publicação.
+
+Em 19/10/2026 foi criada a conta `radar-publico-deploy` para implantação. Ela tem
+`roles/run.developer` somente no serviço Radar, `roles/artifactregistry.writer`
+somente no repositório Docker Radar e `roles/iam.serviceAccountUser` somente na
+conta runtime. O vínculo federado exige o subject imutável
+`repo:bravedragon-gif@227583959/radar-publico-bot@1417694623:environment:production`.
+O provedor também restringe proprietário, ID do repositório e branch main.
+`GCP_DEPLOY_SERVICE_ACCOUNT` deve apontar para essa conta; o workflow rejeita
+contas de deploy e runtime iguais. Nenhuma chave JSON foi criada.
+
 Secret Manager: versões numéricas existentes, sem `latest`. Token do bot e segredo de webhook devem ser os mesmos em execução e manutenção. Não rotacionar sem coordenar o webhook. Rotação é necessária se um segredo tiver sido exposto; nenhum valor foi lido nesta sessão.
 
 Configurar Variables:
