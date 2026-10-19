@@ -51,7 +51,7 @@ def test_menu_keyboard_and_choice(env,monkeypatch,source):
     monkeypatch.setattr(main.store,'menu_set',lambda *args:saved.append(args))
     post(client,'/'+source)
     markup=main.telegram_send.call_args.kwargs['reply_markup']
-    assert len(markup['keyboard']) == 4
+    assert len(markup['keyboard']) == 5
     assert [r[0]['text'].split(' · ')[-1] for r in markup['keyboard'][:3]] == ['Licitações','Atas','Pesquisa']
     post(client,markup['keyboard'][1][0]['text'])
     assert saved[-1] == (999999,source,'atas')
@@ -218,3 +218,80 @@ def test_groups_and_bots_ignored(env):
     post(client,message={'chat':{'id':1,'type':'group'},'from':{'id':1},'text':'/start'})
     post(client,message={'chat':{'id':1,'type':'private'},'from':{'id':1,'is_bot':True},'text':'/start'})
     assert not calls
+
+
+@pytest.mark.parametrize('source', ['pncp', 'compras'])
+@pytest.mark.parametrize('kind', ['licitacoes', 'atas', 'pesquisa'])
+def test_button_only_flow(env, monkeypatch, source, kind):
+    client, calls, search = env
+    from app.menus import MENU, CANCEL, BACK, HELP_BUTTON
+    session = {}
+    admissions = []
+    def save(uid, source=None, kind=None):
+        session.clear()
+        if source:
+            session.update(source=source, kind=kind)
+    monkeypatch.setattr(main.store, 'menu_set', save)
+    monkeypatch.setattr(main.store, 'menu_get', lambda uid: session.copy() or None)
+    monkeypatch.setattr(main.store, 'admit', lambda uid, update, query: admissions.append(query) or True)
+    purchases = AsyncMock(return_value={'items': [], 'pages': 1, 'start': 'a', 'end': 'b', 'kind': kind})
+    monkeypatch.setattr(main, 'compras_search', purchases)
+    def buttons():
+        markup = main.telegram_send.call_args.kwargs['reply_markup']
+        assert markup['is_persistent'] and not markup['one_time_keyboard']
+        return [button['text'] for row in markup['keyboard'] for button in row]
+    post(client, '/start')
+    label = main.SOURCES[source]
+    assert label in buttons()
+    post(client, label)
+    choice = f'{label} · {main.KINDS[kind]}'
+    assert choice in buttons()
+    post(client, choice)
+    assert session == {'source': source, 'kind': kind}
+    assert BACK[source] in buttons() and CANCEL in buttons()
+    post(client, 'viaturas')
+    expected = purchases if source == 'compras' else search
+    assert expected.called and not (search if source == 'compras' else purchases).called
+    assert BACK[source] in buttons()
+    post(client, HELP_BUTTON)
+    assert session == {'source': source, 'kind': kind}
+    assert label in buttons()
+    post(client, BACK[source])
+    assert not session and choice in buttons()
+    post(client, choice)
+    post(client, CANCEL)
+    assert not session and label in buttons()
+    post(client, label)
+    post(client, choice)
+    post(client, MENU)
+    assert not session and label in buttons()
+    assert admissions.count(True) == 1
+
+
+@pytest.mark.parametrize('entry', ['/start', '/menu', '🏠 Menu principal'])
+def test_home_clears_previous_selection(env, monkeypatch, entry):
+    client, calls, search = env
+    saved = []
+    monkeypatch.setattr(main.store, 'menu_set', lambda *args: saved.append(args))
+    post(client, entry)
+    assert saved == [(999999,)] and not search.called
+    assert main.telegram_send.call_args.kwargs['reply_markup'] == main.home_keyboard()
+
+
+def test_expired_session_and_invalid_term_offer_buttons(env, monkeypatch):
+    client, calls, search = env
+    post(client, 'viaturas')
+    assert main.telegram_send.call_args.kwargs['reply_markup'] == main.home_keyboard()
+    monkeypatch.setattr(main.store, 'menu_get', lambda uid: {'source': 'compras', 'kind': 'atas'})
+    post(client, 'x')
+    assert '2 a 120' in calls[-1] and not search.called
+    assert main.telegram_send.call_args.kwargs['reply_markup'] == main.search_keyboard('compras')
+
+
+def test_duplicate_button_does_not_change_session(env, monkeypatch):
+    client, calls, search = env
+    saved = []
+    monkeypatch.setattr(main.store, 'admit', lambda *args: False)
+    monkeypatch.setattr(main.store, 'menu_set', lambda *args: saved.append(args))
+    post(client, 'PNCP')
+    assert not calls and not saved and not search.called

@@ -2,13 +2,23 @@
 
 ## Uso
 
-1. Enviar `/pncp` ou `/compras` em conversa privada.
-2. Escolher **Licitações**, **Atas** ou **Pesquisa** no teclado de resposta.
-3. Digitar o termo, por exemplo `viaturas`.
+1. Iniciar a conversa com `/start` (ou abrir com `/menu`).
+2. Tocar em **PNCP** ou **Compras.gov.br** no menu principal.
+3. Escolher **Licitações**, **Atas** ou **Pesquisa** no teclado de resposta.
+4. Digitar o termo, por exemplo `viaturas`.
+
+Depois de iniciar, a navegação funciona por botões: **Voltar ao PNCP/Compras.gov.br**,
+**Menu principal**, **Cancelar** e **Ajuda**. Os teclados são persistentes e continuam
+disponíveis após os resultados. Apenas os termos de busca precisam ser digitados.
+Voltar, trocar de fonte, abrir o menu principal ou cancelar limpa a seleção anterior.
+Ajuda preserva a seleção e apresenta os botões das fontes. `/start` também limpa a
+seleção. Os comandos `/pncp`, `/compras`, `/cancelar` e atalhos de busca continuam
+disponíveis. Os textos exatos dos botões de navegação são reservados; para buscar
+esses termos, use um comando direto, por exemplo `/pncp PNCP`.
 
 Os botões incluem o nome da fonte para evitar ambiguidade. A seleção vale por
 10 minutos, é individual e persiste no documento de usuário já existente no
-Firestore. `/cancelar` remove a seleção. O texto pesquisado não é salvo na sessão.
+Firestore. **Cancelar** ou `/cancelar` remove a seleção. O texto pesquisado não é salvo na sessão.
 Atalhos anteriores continuam disponíveis. `/compras termo` consulta contratações;
 para busca geral, selecionar Pesquisa no menu. Texto sem seleção válida recebe
 orientação para abrir um menu. Não há interpretação por IA.
@@ -51,13 +61,18 @@ faz uma leitura para recuperar a seleção. Expiração é lógica, sem TTL fatu
 O volume extra de Firestore, consultas, logs e novas imagens/builds pode gerar
 cobranças. Os limites são operacionais, não garantias de custo zero.
 
-Esta funcionalidade não foi implantada. Revisar o PR e autorizar a implantação
-somente no Radar antes de integrar à main: o gatilho existente implanta pushes
-da main automaticamente. Não alterar o serviço `dodfpmdfbot`.
+Esta alteração não foi implantada. Revisar o PR antes de integrar à main e autorizar
+a implantação somente no Radar. O workflow `deploy-cloud-run.yml` usa acionamento
+manual (`workflow_dispatch`) na main. Não alterar o serviço `dodfpmdfbot`.
 
 ## Validação
 
-75 testes aprovados, 1 ignorado (emulador Firestore), 2 avisos de depreciação.
+Validação local dos botões em 19/10/2026: 124 testes aprovados e 1 ignorado
+(emulador Firestore). Dois avisos de depreciação das dependências e um aviso de
+permissão do cache do pytest no ambiente local. Inclui fluxo completo por botões
+nas seis combinações de fonte/categoria, ajuda, voltar, cancelar, menu principal,
+entrada inválida, expiração e duplicatas. A interface real no Telegram ainda
+precisa de validação após implantação autorizada.
 Testes cobrem menus, sessão, expiração, cancelamento, isolamento por usuário,
 seleção da fonte, quota, cache por fonte, parâmetros oficiais, paginação limitada,
 vazio, falhas HTTP e bloqueios independentes após 429.
@@ -69,3 +84,5 @@ do Cloud Run à nova API; ambos exigem validação após implantação autorizad
 
 Documentação oficial: https://dadosabertos.compras.gov.br/swagger-ui/index.html
 e https://dadosabertos.compras.gov.br/v3/api-docs .
+
+Teclado de resposta do Telegram: https://core.telegram.org/bots/api#replykeyboardmarkup .
