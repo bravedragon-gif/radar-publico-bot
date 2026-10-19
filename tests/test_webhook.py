@@ -51,7 +51,7 @@ def test_menu_keyboard_and_choice(env,monkeypatch,source):
     monkeypatch.setattr(main.store,'menu_set',lambda *args:saved.append(args))
     post(client,'/'+source)
     markup=main.telegram_send.call_args.kwargs['reply_markup']
-    assert len(markup['keyboard']) == 5
+    assert len(markup['keyboard']) == len(main.SOURCE_KINDS[source])+2
     assert [r[0]['text'].split(' · ')[-1] for r in markup['keyboard'][:3]] == ['Licitações','Atas','Pesquisa']
     post(client,markup['keyboard'][1][0]['text'])
     assert saved[-1] == (999999,source,'atas')
@@ -78,7 +78,7 @@ def test_compras_does_not_call_pncp(env,monkeypatch):
     post(client,'viaturas')
     assert purchases.await_count == 1 and not search.called
     assert 'Compras.gov.br' in calls[-1]
-    assert keys == [main.cache_key('compras_atas','viaturas',main.datetime.now(main.ZoneInfo('America/Sao_Paulo')).date().isoformat())]
+    assert keys == [main.cache_key('compras_v2_atas',json.dumps(['viaturas',{'dias':7}],sort_keys=True,ensure_ascii=False),main.datetime.now(main.ZoneInfo('America/Sao_Paulo')).date().isoformat())]
 
 
 def test_no_context_explains_and_cancel_clears(env,monkeypatch):
@@ -295,3 +295,62 @@ def test_duplicate_button_does_not_change_session(env, monkeypatch):
     monkeypatch.setattr(main.store, 'menu_set', lambda *args: saved.append(args))
     post(client, 'PNCP')
     assert not calls and not saved and not search.called
+
+
+@pytest.mark.parametrize('kind,term', [('itens','viaturas'), ('materiais','1'), ('servicos','1'),
+                                     ('contratos','viaturas | orgao=123'), ('planejamento','viaturas | orgao=123')])
+def test_new_compras_buttons_and_queries(env, monkeypatch, kind, term):
+    client, calls, search = env
+    saved = []
+    monkeypatch.setattr(main.store, 'menu_set', lambda *args: saved.append(args))
+    result = {'items': [], 'pages': 1, 'kind': kind, 'start': 'a', 'end': 'b'}
+    purchases = AsyncMock(return_value=result)
+    monkeypatch.setattr(main, 'compras_search', purchases)
+    post(client, f'Compras.gov.br · {main.KINDS[kind]}')
+    assert saved == [(999999, 'compras', kind)]
+    monkeypatch.setattr(main.store, 'menu_get', lambda uid: {'source': 'compras', 'kind': kind})
+    post(client, term)
+    assert purchases.call_args.args == (term,)
+    assert purchases.call_args.kwargs['kind'] == kind and not search.called
+
+
+def test_filters_help_preserves_selection_and_does_not_search(env, monkeypatch):
+    client, calls, search = env
+    saved = []
+    admissions = []
+    monkeypatch.setattr(main.store, 'menu_set', lambda *args: saved.append(args))
+    monkeypatch.setattr(main.store, 'admit', lambda uid, update, query: admissions.append(query) or True)
+    post(client, '⚙️ Como filtrar')
+    assert 'CATMAT' in calls[-1] and not saved and not search.called and admissions == [False]
+
+
+def test_invalid_compras_filters_do_not_consume_query_quota(env, monkeypatch):
+    client, calls, search = env
+    admissions = []
+    purchases = AsyncMock()
+    monkeypatch.setattr(main, 'compras_search', purchases)
+    monkeypatch.setattr(main.store, 'menu_get', lambda uid: {'source':'compras', 'kind':'contratos'})
+    monkeypatch.setattr(main.store, 'admit', lambda uid, update, query: admissions.append(query) or True)
+    post(client, 'viaturas')
+    assert 'exige código' in calls[-1] and admissions == [False] and not purchases.called
+
+
+def test_filter_cache_is_canonical_and_isolated(env, monkeypatch):
+    client, calls, search = env
+    monkeypatch.setattr(main.store, 'menu_get', lambda uid: {'source':'compras', 'kind':'licitacoes'})
+    purchases = AsyncMock(return_value={'items':[], 'pages':1, 'kind':'licitacoes', 'start':'a', 'end':'b'})
+    monkeypatch.setattr(main, 'compras_search', purchases)
+    keys = []
+    monkeypatch.setattr(main.store, 'cache_get', lambda key: keys.append(key) or None)
+    post(client, 'viaturas | uf=df | dias=30')
+    post(client, 'viaturas | dias=30 | uf=DF')
+    post(client, 'viaturas | dias=7 | uf=DF')
+    post(client, 'viaturas | dias=30 | uf=SP')
+    assert keys[0] == keys[1] and len(set(keys)) == 3
+
+
+def test_new_modules_are_not_shown_for_pncp(env):
+    client, calls, search = env
+    post(client, '/pncp')
+    labels = [b['text'] for row in main.telegram_send.call_args.kwargs['reply_markup']['keyboard'] for b in row]
+    assert not any('Preços' in label or 'Contratos' in label for label in labels)

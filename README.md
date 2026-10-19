@@ -1,5 +1,11 @@
 # Radar Público
 
+Compras.gov.br: novos menus de **Itens e resultados**, **Preços de materiais**,
+**Preços de serviços**, **Contratos** e **Planejamento**. O botão **Como filtrar**
+explica período (até 90 dias), órgão, UASG e UF disponíveis em cada módulo.
+Até duas páginas por endpoint/modalidade. Preços exigem código CATMAT/CATSER;
+contratos e planejamento exigem código do órgão. Veja [módulos e limites](docs/COMPRAS_MODULES.md).
+
 MVP Python/FastAPI para `@Log_pmdf_bot`. Comandos públicos em conversa privada: `/start`, `/ajuda`, `/pncp`, `/compras`, `/cancelar`, `/pncp termo`, `/licitacoes termo` e `/atas termo`.
 
 `/start` ou `/menu` abre o menu com botões **PNCP**, **Compras.gov.br** e **Ajuda**. Escolha a fonte e depois **Licitações**, **Atas** ou **Pesquisa**; envie o termo em texto livre. Os botões permanecem disponíveis para voltar, abrir o menu principal ou cancelar, inclusive após os resultados. A seleção fica no Firestore por 10 minutos e sobrevive a reinícios. Os comandos anteriores continuam funcionando. Pesquisa combina contratações e atas da fonte selecionada; não compara preços. Veja [fluxo e validação](docs/MENUS.md).

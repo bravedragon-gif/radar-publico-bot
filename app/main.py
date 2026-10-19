@@ -13,7 +13,8 @@ from fastapi import FastAPI, HTTPException, Request
 from app.core import PNCPRateLimited, format_pncp, normalize, pncp_search, telegram_send, validate_term
 from app.rate_limit import LimitReached, cache_key, store
 from app.compras import compras_search, format_compras
-from app.menus import CHOICES, KINDS, SOURCES, NAVIGATION, home_keyboard, keyboard, prompt, search_keyboard
+from app.menus import CHOICES, KINDS, SOURCES, SOURCE_KINDS, FILTER_HELP, NAVIGATION, home_keyboard, keyboard, prompt, search_keyboard
+from app.compras_filters import parse_query
 
 app = FastAPI(title='Radar Público', docs_url=None, redoc_url=None, openapi_url=None)
 logger = logging.getLogger('radar')
@@ -28,11 +29,13 @@ PNCP_LIMIT_MESSAGE = ('O PNCP recusou novas consultas por limite de acesso (HTTP
 HELP = ('Radar Público — consultas públicas em conversa privada\n'
         'Toque em PNCP ou Compras.gov.br, escolha Licitações, Atas ou Pesquisa e digite o termo.\n'
         'Menu principal permite trocar de fonte; Cancelar encerra a seleção.\n\n'
+        'Compras.gov.br também oferece Itens e resultados, Preços de materiais/serviços, Contratos e Planejamento. '
+        'Como filtrar explica períodos, órgão, UF e UASG disponíveis. Preços exigem código CATMAT/CATSER; contratos e PCA exigem código do órgão.\n\n'
         'Atalhos opcionais:\n/menu — menu principal\n'
         '/pncp — menu PNCP\n/compras — menu Compras.gov.br\n/cancelar — encerrar seleção\n'
         '/pncp termo — contratações\n/licitacoes termo — equivalente a /pncp\n'
         '/atas termo — atas por atualização global\n'
-        'Buscas amostrais de 7 dias, até 5 resultados. 10 consultas por usuário em 60 minutos. '
+        'Buscas amostrais, até 5 resultados. PNCP: 7 dias. Compras: padrão 7, até 90 dias; planejamento por ano. 10 consultas por usuário em 60 minutos. '
         'Fontes: PNCP e Compras.gov.br. Pesquisa é busca geral por termo, não pesquisa de preços. '
         'Sujeito a teto global e indisponibilidades.')
 
@@ -65,7 +68,7 @@ async def process(cid, uid, update, text):
     text = NAVIGATION.get(text, text)
     parts = text.split(maxsplit=1)
     command = parts[0].split('@')[0].lower() if parts else ''
-    if command.startswith('/') and command not in ('/start', '/menu', '/ajuda', '/pncp', '/compras', '/licitacoes', '/atas', '/cancelar'):
+    if command.startswith('/') and command not in ('/start', '/menu', '/ajuda', '/filtros', '/pncp', '/compras', '/licitacoes', '/atas', '/cancelar'):
         return
     source, selection = ('compras' if command == '/compras' else 'pncp'), None
     action = 'search'
@@ -75,32 +78,46 @@ async def process(cid, uid, update, text):
     elif text in CHOICES:
         source, kind = CHOICES[text]
         action = 'choose'
-    elif command in ('/pncp', '/compras') and len(parts) == 2 and parts[1].lower() in KINDS:
+    elif command in ('/pncp', '/compras') and len(parts) == 2 and parts[1].lower() in SOURCE_KINDS[source]:
         kind, action = parts[1].lower(), 'choose'
     elif command in ('/start', '/menu'):
         action = 'home'
     elif command in ('/ajuda', '/cancelar'):
         action = 'help' if command == '/ajuda' else 'cancel'
+    elif command == '/filtros':
+        action = 'filters'
     query = command in ('/pncp', '/licitacoes', '/atas')
     query = action == 'search' and (query or command == '/compras')
     term = None
     invalid = False
+    invalid_message = 'Digite um termo de 2 a 120 caracteres, por exemplo: viaturas.'
     if query:
         try:
-            term = validate_term(parts[1] if len(parts) > 1 else '')
-        except ValueError:
+            raw = parts[1] if len(parts) > 1 else ''
+            if source == 'compras':
+                parse_query(raw, kind)
+                term = raw
+            else:
+                term = validate_term(raw)
+        except ValueError as exc:
             invalid = True
+            invalid_message = str(exc)
     accepted = False
     stage = 'admission'
     try:
         if not command.startswith('/') and action == 'search':
             selection = await asyncio.to_thread(store.menu_get, uid)
-            if (selection and selection.get('source') in SOURCES and selection.get('kind') in KINDS):
+            if (selection and selection.get('source') in SOURCES and selection.get('kind') in SOURCE_KINDS[selection['source']]):
                 source, kind, query = selection['source'], selection['kind'], True
                 try:
-                    term = validate_term(text)
-                except ValueError:
+                    if source == 'compras':
+                        parse_query(text, kind)
+                        term = text
+                    else:
+                        term = validate_term(text)
+                except ValueError as exc:
                     invalid = True
+                    invalid_message = str(exc)
             else:
                 action = 'expired'
         accepted = await asyncio.to_thread(store.admit, uid, update, query and not invalid)
@@ -123,6 +140,8 @@ async def process(cid, uid, update, text):
             elif action == 'cancel':
                 await asyncio.to_thread(store.menu_set, uid)
                 await telegram_send(cid, 'Seleção encerrada. Escolha uma fonte nos botões para começar novamente.', reply_markup=home_keyboard())
+            elif action == 'filters':
+                await telegram_send(cid, FILTER_HELP)
             elif action == 'expired':
                 await telegram_send(cid, 'Escolha a fonte nos botões e depois o tipo de consulta; a seleção expira em 10 minutos.', reply_markup=home_keyboard())
             else:
@@ -130,13 +149,17 @@ async def process(cid, uid, update, text):
             return
         if invalid:
             stage = 'telegram'
-            await telegram_send(cid, 'Digite um termo de 2 a 120 caracteres, por exemplo: viaturas.',
+            await telegram_send(cid, invalid_message,
                                 reply_markup=search_keyboard(source) if selection else home_keyboard())
             return
         if source == 'pncp' and kind == 'licitacoes' and selection is None:
             kind = 'pncp'
         day = datetime.now(ZoneInfo('America/Sao_Paulo')).date().isoformat()
-        key = cache_key(kind if source == 'pncp' else 'compras_'+kind, normalize(term), day)
+        cache_term = normalize(term)
+        if source == 'compras':
+            clean, options = parse_query(term, kind)
+            cache_term = json.dumps([normalize(clean), options], sort_keys=True, ensure_ascii=False)
+        key = cache_key(kind if source == 'pncp' else 'compras_v2_'+kind, cache_term, day)
         stage = 'cache_read'
         result = await asyncio.to_thread(store.cache_get, key)
         if result is None:
