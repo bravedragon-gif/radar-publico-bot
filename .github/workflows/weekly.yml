@@ -1,6 +1,11 @@
 name: Daily briefing and channel publication
 on:
   workflow_dispatch:
+    inputs:
+      preview_only:
+        description: Generate artifacts and check history without sending to Telegram
+        type: boolean
+        default: false
   # Daily 09:00 America/Sao_Paulo. GitHub may delay scheduled runs.
   schedule:
     - cron: '0 12 * * *'
@@ -31,7 +36,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - run: python -m app.briefing
+      - run: python -m app.briefing --history
+        env:
+          GOOGLE_CLOUD_PROJECT: dodfpmdfbot
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: briefing-preview-${{ github.run_id }}
@@ -39,6 +46,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
       - name: Publish generated briefing to channel
+        if: github.event_name != 'workflow_dispatch' || inputs.preview_only != true
         env:
           BRIEFING_PUBLICATION_ENABLED: 'true'
           GOOGLE_CLOUD_PROJECT: dodfpmdfbot

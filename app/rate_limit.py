@@ -110,6 +110,45 @@ class Store:
             {'sha256': digest, 'claimed_at': int(time.time()), 'status': 'claimed'},
             retry=None, timeout=5)
 
+    def news_history_get(self, now=None):
+        now = int(time.time()) if now is None else now
+        data = client().document('radar_publico_ops/news_history').get(retry=None, timeout=5).to_dict() or {}
+        return {key for key, stamp in data.get('items', {}).items() if stamp >= now - 35*86400}
+
+    def claim_news_publication(self, day, digest, identities, now):
+        db = client()
+        publication = db.document(f'radar_publico_publications/{day}')
+        history = db.document('radar_publico_ops/news_history')
+
+        @firestore.transactional
+        def apply(tx):
+            # All reads precede writes; includes claims made by the previous workflow version.
+            previous = publication.get(transaction=tx, retry=None, timeout=5).to_dict()
+            data = history.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
+            if previous is not None:
+                raise ValueError('Publicação diária já reivindicada; conferir canal antes de reconciliar')
+            recent = {key: stamp for key, stamp in data.get('items', {}).items() if stamp >= now - 35*86400}
+            if any(key in recent for key in identities):
+                raise ValueError('Notícia já reivindicada; gere uma nova prévia com --history')
+            recent.update({key: now for key in identities})
+            if len(recent) > 400:
+                raise ValueError('Histórico acima do limite; requer revisão operacional')
+            tx.set(publication, {'sha256': digest, 'claimed_at': now, 'status': 'claimed', 'article_ids': identities})
+            tx.set(history, {'items': recent})
+        apply(db.transaction(max_attempts=3))
+
+    def finish_news_publication(self, day, digest):
+        db = client()
+        ref = db.document(f'radar_publico_publications/{day}')
+
+        @firestore.transactional
+        def apply(tx):
+            data = ref.get(transaction=tx, retry=None, timeout=5).to_dict() or {}
+            if data.get('sha256') != digest or data.get('status') != 'claimed':
+                raise ValueError('Reivindicação de publicação divergente')
+            tx.set(ref, dict(data, status='sent', sent_at=int(time.time())))
+        apply(db.transaction(max_attempts=3))
+
     def cache_get(self, key):
         slot = int(key[:8], 16) % 256
         data = client().document(f'radar_publico_cache/{slot}').get(retry=None, timeout=5).to_dict() or {}

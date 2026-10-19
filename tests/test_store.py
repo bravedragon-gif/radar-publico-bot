@@ -133,3 +133,44 @@ def test_user_rejection_counts_global_budget(db):
     with pytest.raises(rl.LimitReached):
         store.admit(1,11,True,10020)
     assert db.data['radar_publico_ops/budget']['updates']==11
+
+
+def test_news_claim_protects_day_and_urls_across_days(db):
+    store = rl.Store()
+    store.claim_news_publication('2026-10-19', 'digest', ['url1'], 10000000)
+    assert store.news_history_get(10000000) == {'url1'}
+    with pytest.raises(ValueError, match='diária'):
+        store.claim_news_publication('2026-10-19', 'digest2', ['url2'], 10000001)
+    with pytest.raises(ValueError, match='Notícia'):
+        store.claim_news_publication('2026-10-20', 'digest2', ['url1'], 10086400)
+    assert 'radar_publico_publications/2026-10-20' not in db.data
+    store.claim_news_publication('2026-10-20', 'digest2', ['url2'], 10086400)
+    store.finish_news_publication('2026-10-20', 'digest2')
+    assert db.data['radar_publico_publications/2026-10-20']['status'] == 'sent'
+
+
+def test_news_history_prunes_old_items_and_does_not_overwrite_uncertain_claim(db):
+    store = rl.Store()
+    db.data['radar_publico_ops/news_history'] = {'items': {'old': 0, 'recent': 9999999}}
+    db.data['radar_publico_publications/2026-10-19'] = {'sha256': 'old', 'status': 'claimed'}
+    assert store.news_history_get(10000000) == {'recent'}
+    with pytest.raises(ValueError):
+        store.claim_news_publication('2026-10-19', 'new', ['new'], 10000000)
+    assert db.data['radar_publico_publications/2026-10-19']['sha256'] == 'old'
+    store.claim_news_publication('2026-10-20', 'new', ['new'], 10000000)
+    assert db.data['radar_publico_ops/news_history']['items'] == {'recent': 9999999, 'new': 10000000}
+
+
+def test_news_history_full_fails_without_writes(db):
+    store = rl.Store()
+    db.data['radar_publico_ops/news_history'] = {'items': {str(i): 10000000 for i in range(400)}}
+    with pytest.raises(ValueError, match='limite'):
+        store.claim_news_publication('2026-10-19', 'digest', ['new'], 10000001)
+    assert 'radar_publico_publications/2026-10-19' not in db.data
+
+
+def test_news_confirmation_requires_matching_claim(db):
+    db.data['radar_publico_publications/2026-10-19'] = {'sha256': 'digest', 'status': 'claimed'}
+    with pytest.raises(ValueError):
+        rl.Store().finish_news_publication('2026-10-19', 'wrong')
+    assert db.data['radar_publico_publications/2026-10-19']['status'] == 'claimed'
