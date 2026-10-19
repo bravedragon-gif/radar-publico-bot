@@ -10,3 +10,5 @@ artifacts/
 *.publishing
 
 gha-creds-*.json
+
+.test-deps/

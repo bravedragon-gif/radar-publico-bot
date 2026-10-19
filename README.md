@@ -8,7 +8,7 @@ As buscas consultam uma **amostra** do PNCP dos últimos sete dias, filtrada loc
 
 Limites distribuídos: 10 consultas por usuário em qualquer intervalo de 60 minutos, 1.500 atualizações aceitas/dia UTC e 400 chamadas PNCP/dia UTC. Cache de 30 minutos, em até 256 documentos Firestore. Duplicatas recentes não repetem consultas. Falhas na persistência bloqueiam novas buscas.
 
-Briefing sem IA: seleção determinística de cinco títulos originais, recentes e relevantes, com fonte oficial, data e confirmação na página. Gera JSON/texto para revisão. Cron e publicação automática permanecem desativados. As fontes de Gestão/Compras redirecionaram para login na validação de 17/10/2026; **a geração real ainda está bloqueada**.
+Briefing sem IA: até cinco títulos originais dos últimos sete dias, filtrados por temas de compras, logística e finanças públicas e confirmados na página. Fontes: comunicados do Compras e editoria de Economia da Agência Brasil. O workflow semanal gera JSON/texto e publica no canal `@logisticapmdf` às segundas, a partir de 09h de Brasília (o agendamento GitHub pode atrasar). Sem novidades, informa isso; com falha parcial, indica cobertura parcial; com todas as fontes indisponíveis, aborta. Não usa notícias antigas para completar quantidade. Veja [ativação e validação](docs/AUTOMATIC_BRIEFING.md).
 
 Testes locais (Python 3.12 em CI; validação local também em 3.13):
 
