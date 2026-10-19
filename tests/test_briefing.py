@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
 import httpx
@@ -74,7 +74,7 @@ def test_publish_claim_and_duplicate_block(tmp_path,monkeypatch):
     with pytest.raises(ValueError):
         asyncio.run(briefing.publish(path,digest,now=NOW))
     assert len(sent)==1 and sent[0][0]=='@logisticapmdf'
-    assert claims==[('2026-W42',digest)]
+    assert claims==[('2026-10-17',digest)]
 
 
 def test_publish_rejects_wrong_digest(tmp_path,monkeypatch):
@@ -85,7 +85,7 @@ def test_publish_rejects_wrong_digest(tmp_path,monkeypatch):
         asyncio.run(briefing.publish(path,'0'*64,now=NOW))
 
 
-def test_fewer_than_five_does_not_block_weekly_briefing():
+def test_fewer_than_five_does_not_block_daily_briefing():
     assert len(generate(feed(2))['items']) == 2
 
 
@@ -105,3 +105,33 @@ def test_all_sources_down_blocks_publication():
             await briefing.generate_briefing(client=c, now=NOW)
     with pytest.raises(ValueError, match='Nenhuma fonte'):
         asyncio.run(run())
+
+
+def test_daily_news_excludes_previous_days():
+    assert briefing.parse_feed(feed(), NOW + timedelta(hours=25)) == []
+    assert len(briefing.parse_feed(feed(), NOW + timedelta(hours=23))) == 5
+
+
+def test_publication_day_uses_brasilia_midnight(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 18, 2, 59, tzinfo=timezone.utc)
+    draft = generate(feed())
+    draft['generated_at'] = now.isoformat()
+    path = tmp_path / 'draft.json'
+    path.write_text(json.dumps(draft), encoding='utf-8')
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setenv('BRIEFING_PUBLICATION_ENABLED', 'true')
+    claims, sent = set(), []
+    def claim(day, sha):
+        if day in claims:
+            raise ValueError('claimed')
+        claims.add(day)
+    async def send(channel, text):
+        sent.append(channel)
+    monkeypatch.setattr(briefing.store, 'claim_publication', claim)
+    monkeypatch.setattr(briefing, 'telegram_send', send)
+    asyncio.run(briefing.publish(path, digest, now=now))
+    with pytest.raises(ValueError, match='claimed'):
+        asyncio.run(briefing.publish(path, digest, now=now))
+    asyncio.run(briefing.publish(path, digest, now=now + timedelta(minutes=2)))
+    assert claims == {'2026-10-17', '2026-10-18'}
+    assert sent == ['@logisticapmdf', '@logisticapmdf']

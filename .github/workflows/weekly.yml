@@ -1,9 +1,9 @@
-name: Weekly briefing and channel publication
+name: Daily briefing and channel publication
 on:
   workflow_dispatch:
-  # Monday 09:00 America/Sao_Paulo. GitHub may delay scheduled runs.
+  # Daily 09:00 America/Sao_Paulo. GitHub may delay scheduled runs.
   schedule:
-    - cron: '0 12 * * 1'
+    - cron: '0 12 * * *'
 permissions:
   contents: read
   id-token: write
