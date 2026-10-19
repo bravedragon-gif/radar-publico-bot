@@ -70,7 +70,7 @@ def parse_feed(content, now):
                 continue
         except (ValueError, TypeError):
             continue
-        if (official_url(url) and now-timedelta(days=7) <= published <= now
+        if (official_url(url) and now-timedelta(hours=24) <= published <= now
                 and any(topic in normalize(title) for topic in TOPICS)):
             items.append({'title': title[:300], 'url': url, 'published': published.isoformat()})
     return items
@@ -122,9 +122,9 @@ async def generate_briefing(client=None, now=None):
 
 def render(draft):
     warning = ('Uma ou mais fontes ficaram indisponíveis; cobertura parcial.\n' if draft.get('unavailable_sources') else '')
-    return 'Radar Público — briefing semanal\nSeleção de fontes públicas; títulos originais, sem IA.\n' + warning + '\n' + ('\n\n'.join(
+    return 'Radar Público — briefing diário\nSeleção de fontes públicas; títulos originais, sem IA.\n' + warning + '\n' + ('\n\n'.join(
         f"{i}. {x['title']}\nPublicada em {x['published'][:10]}\n{x['url']}" for i,x in enumerate(draft['items'], 1))
-        or 'Nenhuma notícia recente sobre os temas monitorados foi encontrada nas fontes disponíveis nos últimos sete dias.')
+        or 'Nenhuma notícia recente sobre os temas monitorados foi encontrada nas fontes disponíveis nas últimas 24 horas.')
 
 
 async def publish(path, approved_sha, now=None):
@@ -138,8 +138,8 @@ async def publish(path, approved_sha, now=None):
         raise ValueError('Prévia expirada ou inválida')
     if not all(official_url(x['url']) for x in draft['items']):
         raise ValueError('Fonte não permitida')
-    week = now.astimezone(ZoneInfo('America/Sao_Paulo')).strftime('%G-W%V')
-    await asyncio.to_thread(store.claim_publication, week, approved_sha)
+    day = now.astimezone(ZoneInfo('America/Sao_Paulo')).date().isoformat()
+    await asyncio.to_thread(store.claim_publication, day, approved_sha)
     await telegram_send('@logisticapmdf', render(draft))
 
 
