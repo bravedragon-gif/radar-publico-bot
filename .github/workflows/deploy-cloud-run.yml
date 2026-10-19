@@ -63,7 +63,7 @@ jobs:
             --memory 512Mi --cpu 1 --cpu-throttling --no-cpu-boost \
             --concurrency 1 --timeout 60 \
             --update-env-vars "GOOGLE_CLOUD_PROJECT=dodfpmdfbot,TELEGRAM_CHANNEL_ID=@logisticapmdf,QUERIES_ENABLED=true,GLOBAL_DAILY_UPDATES=1500,GLOBAL_DAILY_EXTERNAL=400" \
-            --update-secrets "TELEGRAM_BOT_TOKEN=radar-telegram-token:$TOKEN_VERSION,TELEGRAM_WEBHOOK_SECRET=radar-webhook-secret:$WEBHOOK_VERSION" \
+            --update-secrets "TELEGRAM_BOT_TOKEN=TELEGRAM_BOT_TOKEN:$TOKEN_VERSION,TELEGRAM_WEBHOOK_SECRET=radar-webhook-secret:$WEBHOOK_VERSION" \
             --quiet
       - name: Liveness check
         run: curl --fail --max-time 30 --retry 2 https://radar-publico-bot-389001780280.southamerica-east1.run.app/health
