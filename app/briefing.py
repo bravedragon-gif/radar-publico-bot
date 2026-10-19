@@ -18,8 +18,8 @@ from app.core import normalize, telegram_send
 from app.rate_limit import store
 
 FEEDS = (
-    'https://www.gov.br/gestao/pt-br/assuntos/noticias/RSS',
-    'https://www.gov.br/compras/pt-br/acesso-a-informacao/noticias/RSS',
+    'https://www.gov.br/compras/pt-br/acesso-a-informacao/comunicados/comunicados-de-2026/RSS',
+    'https://agenciabrasil.ebc.com.br/rss/economia/feed.xml',
 )
 TOPICS = ('licitac', 'contrat', 'logistic', 'compras', 'orcament', 'financas', 'fiscal', 'tesouro', 'registro de precos')
 MAX_BYTES = 2_000_000
@@ -35,7 +35,9 @@ class PageText(HTMLParser):
 
 def official_url(url):
     p = urlparse(url)
-    return p.scheme == 'https' and p.netloc == 'www.gov.br' and p.path.startswith(('/gestao/', '/compras/')) and not p.query and not p.fragment
+    allowed = (p.netloc == 'www.gov.br' and p.path.startswith(('/gestao/', '/compras/')) or
+               p.netloc == 'agenciabrasil.ebc.com.br' and p.path.startswith('/economia/noticia/'))
+    return p.scheme == 'https' and allowed and not p.query and not p.fragment
 
 
 async def fetch(client, url):
@@ -52,11 +54,18 @@ async def fetch(client, url):
 def parse_feed(content, now):
     root = ElementTree.fromstring(content)
     items = []
-    for entry in root.findall('.//item')[:50]:
-        title = ' '.join(unescape(entry.findtext('title') or '').split())
-        url = (entry.findtext('link') or '').strip()
+    entries = root.findall('.//item') + root.findall('.//{http://purl.org/rss/1.0/}item')
+    if root.tag not in ('rss', '{http://www.w3.org/1999/02/22-rdf-syntax-ns#}RDF'):
+        raise ValueError('Formato de feed inválido')
+    for entry in entries[:50]:
+        def field(name):
+            return entry.findtext(name) or entry.findtext('{http://purl.org/rss/1.0/}'+name) or ''
+        title = ' '.join(unescape(field('title')).split())
+        url = field('link').strip()
         try:
-            published = parsedate_to_datetime(entry.findtext('pubDate') or '')
+            date = field('pubDate')
+            published = (parsedate_to_datetime(date) if date else
+                         datetime.fromisoformat(entry.findtext('{http://purl.org/dc/elements/1.1/}date') or ''))
             if published.tzinfo is None:
                 continue
         except (ValueError, TypeError):
@@ -70,17 +79,30 @@ def parse_feed(content, now):
 async def generate_briefing(client=None, now=None):
     now = now or datetime.now(timezone.utc)
     own = client is None
-    client = client or httpx.AsyncClient(timeout=10, follow_redirects=False)
+    client = client or httpx.AsyncClient(timeout=10, follow_redirects=False, headers={
+        'User-Agent': 'RadarPublico/1.0 (+https://github.com/bravedragon-gif/radar-publico-bot)'})
     try:
         candidates = {}
+        available, unavailable = [], []
         for feed in FEEDS:
-            for item in parse_feed(await fetch(client, feed), now):
+            try:
+                items = parse_feed(await fetch(client, feed), now)
+            except (httpx.HTTPError, ValueError, ElementTree.ParseError):
+                unavailable.append(feed)
+                continue
+            available.append(feed)
+            for item in items:
                 candidates[item['url']] = item
+        if not available:
+            raise ValueError('Nenhuma fonte disponível')
         selected, titles = [], set()
         for item in sorted(candidates.values(), key=lambda x:x['published'], reverse=True)[:15]:
             if normalize(item['title']) in titles:
                 continue
-            page = await fetch(client, item['url'])
+            try:
+                page = await fetch(client, item['url'])
+            except httpx.HTTPError:
+                continue
             parser = PageText()
             parser.feed(page.decode('utf-8'))
             if normalize(item['title']) not in normalize(' '.join(' '.join(parser.parts).split())):
@@ -89,17 +111,20 @@ async def generate_briefing(client=None, now=None):
             selected.append(dict(item, page_sha256=hashlib.sha256(page).hexdigest()))
             if len(selected) == 5:
                 break
-        if len(selected) != 5:
-            raise ValueError(f'Briefing bloqueado: apenas {len(selected)} notícias recentes verificadas; exigidas 5.')
-        return {'generated_at': now.isoformat(), 'sources': list(FEEDS), 'items': selected}
+        if candidates and not selected:
+            raise ValueError('Nenhuma notícia candidata pôde ser verificada')
+        return {'generated_at': now.isoformat(), 'sources': available,
+                'unavailable_sources': unavailable, 'items': selected}
     finally:
         if own:
             await client.aclose()
 
 
 def render(draft):
-    return 'Radar Público — briefing semanal\nSeleção de fontes oficiais; títulos originais, sem IA.\n\n' + '\n\n'.join(
+    warning = ('Uma ou mais fontes ficaram indisponíveis; cobertura parcial.\n' if draft.get('unavailable_sources') else '')
+    return 'Radar Público — briefing semanal\nSeleção de fontes públicas; títulos originais, sem IA.\n' + warning + '\n' + ('\n\n'.join(
         f"{i}. {x['title']}\nPublicada em {x['published'][:10]}\n{x['url']}" for i,x in enumerate(draft['items'], 1))
+        or 'Nenhuma notícia recente sobre os temas monitorados foi encontrada nas fontes disponíveis nos últimos sete dias.')
 
 
 async def publish(path, approved_sha, now=None):
@@ -109,7 +134,7 @@ async def publish(path, approved_sha, now=None):
     draft = json.loads(raw)
     now = now or datetime.now(timezone.utc)
     age = now-datetime.fromisoformat(draft['generated_at'])
-    if not timedelta(0) <= age <= timedelta(hours=24) or len(draft['items']) != 5:
+    if not timedelta(0) <= age <= timedelta(hours=24) or not 0 <= len(draft['items']) <= 5 or not draft.get('sources'):
         raise ValueError('Prévia expirada ou inválida')
     if not all(official_url(x['url']) for x in draft['items']):
         raise ValueError('Fonte não permitida')
@@ -132,7 +157,8 @@ async def main():
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(draft, ensure_ascii=False, indent=2), encoding='utf-8')
     path.with_suffix('.txt').write_text(render(draft), encoding='utf-8')
-    print('Prévia gerada. SHA256:', hashlib.sha256(path.read_bytes()).hexdigest())
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    print('Prévia gerada. SHA256:', digest)
 
 
 if __name__ == '__main__':

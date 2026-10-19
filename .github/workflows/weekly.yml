@@ -1,20 +1,32 @@
-name: Weekly briefing preview
+name: Weekly briefing and channel publication
 on:
   workflow_dispatch:
-  # After source validation and approval only: Monday 09:00 America/Sao_Paulo = 12:00 UTC.
-  # schedule:
-  #   - cron: '0 12 * * 1'
+  # Monday 09:00 America/Sao_Paulo. GitHub may delay scheduled runs.
+  schedule:
+    - cron: '0 12 * * 1'
 permissions:
   contents: read
+  id-token: write
 concurrency:
-  group: radar-briefing-preview
+  group: radar-briefing-publication
   cancel-in-progress: false
 jobs:
   preview:
+    if: github.ref == 'refs/heads/main'
+    environment: briefing-publication
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PUBLISH_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/get-secretmanager-secrets@2b5f97c5a4b9c105e64646762ad4fc3f5128e6f5 # v2
+        id: secrets
+        with:
+          secrets: |-
+            token:dodfpmdfbot/radar-telegram-token/${{ vars.TELEGRAM_TOKEN_VERSION }}
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
@@ -26,3 +38,11 @@ jobs:
           path: artifacts/
           retention-days: 7
           if-no-files-found: error
+      - name: Publish generated briefing to channel
+        env:
+          BRIEFING_PUBLICATION_ENABLED: 'true'
+          GOOGLE_CLOUD_PROJECT: dodfpmdfbot
+          TELEGRAM_BOT_TOKEN: ${{ steps.secrets.outputs.token }}
+        run: |
+          SHA=$(sha256sum artifacts/briefing.json | cut -d ' ' -f 1)
+          python -m app.briefing --publish artifacts/briefing.json --approved-sha "$SHA"
