@@ -6,7 +6,7 @@ from app.compras import compras_search, format_compras
 from app.core import PNCPRateLimited
 
 
-@pytest.mark.parametrize('kind,count', [('licitacoes',3),('atas',1),('pesquisa',6)])
+@pytest.mark.parametrize('kind,count', [('licitacoes',6),('atas',2),('pesquisa',12)])
 def test_official_parameters_and_sample(kind,count):
     calls,reservations=[],[]
     async def reserve():
@@ -14,7 +14,7 @@ def test_official_parameters_and_sample(kind,count):
     def handler(req):
         calls.append(req)
         assert req.url.host == 'dadosabertos.compras.gov.br'
-        assert req.url.params['pagina'] == '1' and req.url.params['tamanhoPagina'] == '50'
+        assert req.url.params['pagina'] in ('1','2') and req.url.params['tamanhoPagina'] == '50'
         ata='/modulo-arp/' in req.url.path
         if not ata:
             assert int(req.url.params['codigoModalidade']) in ({3,4,5,6,7} if kind == 'pesquisa' else {3,4,5})

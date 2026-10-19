@@ -1,5 +1,9 @@
 # Menus PNCP e Compras.gov.br
 
+Para os novos módulos, filtros e paginação Compras.gov.br, veja
+[Módulos e filtros](COMPRAS_MODULES.md). As contagens de chamadas e validações
+abaixo descrevem a versão anterior dos menus.
+
 ## Uso
 
 1. Iniciar a conversa com `/start` (ou abrir com `/menu`).
